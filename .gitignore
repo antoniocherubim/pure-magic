@@ -3,5 +3,4 @@ __pycache__/
 work/
 .env
 *.pyc
-.venv/
 venv/

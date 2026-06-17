@@ -1,86 +1,108 @@
-# Local Autonomous Coding Loop (MVP)
+# Local Autonomous Coding Loop
 
-Orquestrador Python que coordena três agentes (**Planner**, **Executor**, **Reviewer**) localmente, usando OpenAI API (fase futura), subprocess e git CLI, com regras de segurança e logs incrementais.
+Harness local de engenharia para desenvolvimento assistido por agentes em um repositório, com ciclo controlado de Planner, Executor e Reviewer usando `subprocess`, `git` e prompts estruturados.
 
-## Arquitetura
+## Posicionamento
 
+Este projeto não tenta ser um framework pesado de agentes. A direção é construir uma camada de `harness engineering`: uma infraestrutura local, auditável e segura para coordenar trabalho de agentes sobre uma base de código.
+
+O foco principal está em:
+
+- contratos claros de entrada e saída
+- execução determinística de comandos
+- aplicação segura de mudanças no repositório
+- verificação automática por iteração
+- trilha de auditoria com logs, diffs e decisões
+- facilidade para trocar o agente que atua como Planner, Executor ou Reviewer
+
+Em outras palavras, o valor central está menos no modelo e mais no loop operacional confiável ao redor dele.
+
+## Escopo atual
+
+Esta implementação inicial foca em:
+
+- ler `agent_contract.md`
+- validar restrições e limites
+- exigir branch `agent/<task-name>`
+- gerar prompt do Planner
+- gerar prompt do Executor para outro agente externo
+- aplicar apenas operações `write_file`
+- rodar checks definidos no contrato
+- registrar logs e artefatos em `work/`
+- decidir continuidade com Reviewer
+
+Nesta fase de desenvolvimento, o projeto já está preparado para um Executor externo via prompt estruturado, enquanto Planner e Reviewer podem continuar locais ou também ser substituídos depois.
+
+## Estrutura
+
+```text
+runner.py
+agent_loop/
+  __init__.py
+  agents.py
+  config.py
+  models.py
+  prompts.py
+  runner.py
+  tools.py
+tests/
+agent_contract.example.md
 ```
-runner.py (CLI)
-    └── agent_loop/
-            ├── runner.py    # ciclo de iterações
-            ├── agents.py    # Planner, Executor, Reviewer
-            ├── tools.py     # git, subprocess, arquivos (segurança)
-            ├── prompts.py   # templates e validação JSON
-            ├── config.py    # limites e defaults
-            └── models.py    # dataclasses internas
-```
 
-Fluxo por iteração:
+Responsabilidade dos módulos:
 
-1. Ler e validar `agent_contract.md`
-2. Verificar git status
-3. Criar branch `agent/<task-name>` (exceto em dry-run)
-4. **Planner** → plano atômico
-5. **Executor** → JSON com `operations`, `commands`, `summary`
-6. Validar e aplicar operações (ou simular em dry-run)
-7. Executar comandos de verificação
-8. **Reviewer** → `CONTINUE` / `OBJECTIVE_COMPLETE` / `REVISE`
-9. Registrar em `work/agent_log.md`
+- `runner.py`: entrada CLI
+- `agent_loop/runner.py`: loop principal de execução
+- `agent_loop/agents.py`: papéis de Planner, Reviewer e ponte com Executor externo
+- `agent_loop/tools.py`: operações seguras de git, subprocess, arquivos e logs
+- `agent_loop/prompts.py`: contratos de prompt e validação de payloads
+- `agent_loop/models.py`: modelos internos e registros de iteração
+- `agent_loop/config.py`: limites, defaults e regras de segurança
 
-## Instalação
+## Uso
 
 ```bash
-pip install -r requirements.txt
-```
-
-## Uso (dry-run)
-
-```bash
-# Copie o contrato de exemplo para o repo alvo
 cp agent_contract.example.md agent_contract.md
-
-# Execute 1 iteração simulada (sem mutações)
-python runner.py --dry-run --repo .
+python runner.py --repo . --dry-run
 ```
 
-Opções:
+`--dry-run` executa uma iteração simulada e grava `work/agent_log.md`.
 
-| Flag | Descrição |
-|------|-----------|
-| `--repo PATH` | Repositório alvo (default: `.`) |
-| `--contract PATH` | Arquivo de contrato (default: `agent_contract.md`) |
-| `--dry-run` | Simula sem alterar disco/git (default) |
-| `--no-dry-run` | Aplica mudanças reais |
-| `--task-name NAME` | Nome da branch `agent/<name>` |
+Fluxo esperado:
 
-## Contrato do agente
+1. Ler contrato
+2. Validar estado do repositório
+3. Garantir branch `agent/<task-name>`
+4. Gerar plano mínimo
+5. Gerar prompt do Executor
+6. Receber operações estruturadas
+7. Aplicar mudanças com segurança
+8. Rodar checks
+9. Registrar diff, decisão e log da iteração
 
-Veja [`agent_contract.example.md`](agent_contract.example.md). Campos obrigatórios:
+## Contrato
+
+O contrato aceita frontmatter simples. Campos obrigatórios:
 
 - `objective`
 - `checks`
 - `constraints`
 - `max_iterations`
-
-## Testes
-
-```bash
-pytest
-```
+- `task_name`
 
 ## Segurança
 
-Todas as interações com o sistema passam por `agent_loop/tools.py`:
+O loop bloqueia:
 
-- Comandos perigosos (`sudo`, `rm -rf`, `git push`, etc.) são bloqueados
-- Paths protegidos (`.env`, `.git/`) não podem ser alterados
-- Branch de trabalho obrigatória com prefixo `agent/`
-- Push remoto proibido
+- `sudo`
+- `rm -rf`
+- `git push`
+- troca para `main` ou `master`
+- alterações em `.env`
+- alterações dentro de `.git/`
 
-## Roadmap
+Também exige repositório limpo antes de mutações reais.
 
-- [ ] Integração real com OpenAI API
-- [ ] Aplicação e revert de operações por iteração
-- [ ] Suporte a `modify_file` / `delete_file`
-- [ ] Commits locais opcionais na branch de agente
-- [ ] Testes de integração com mocks da API
+## Próximo passo recomendado
+
+Conectar um Executor externo que consuma `ExternalExecutorBridge.build_prompt(...)` e devolva o JSON estruturado esperado. Depois disso, o mesmo padrão pode ser expandido para plugar Planner e Reviewer remotos sem mudar o núcleo do harness.

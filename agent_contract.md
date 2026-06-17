@@ -1,31 +1,22 @@
 ---
-objective: Implementar uma função de saudação simples com testes pytest
+objective: Rebuild the initial local autonomous coding loop foundation
 checks:
-  - pytest
+  - python -m pytest
 constraints:
-  - Não modificar arquivos em .git/
-  - Não executar git push
-  - Não alterar .env
+  - Never run sudo
+  - Never run rm -rf
+  - Never modify .env
+  - Never push to a remote
 max_iterations: 3
+task_name: rebuild-initial-foundation
 allowed_installs: []
 allow_overwrite: false
-task_name: hello-greeting
+cost_limit: 1.0
+failure_limit: 3
+command_timeout_sec: 120
+estimated_cost_per_iteration: 0.02
 ---
 
 # Agent Contract
 
-Este arquivo define o contrato entre o operador humano e o orquestrador de agentes.
-
-## Campos
-
-| Campo | Descrição |
-|-------|-----------|
-| `objective` | Objetivo da tarefa em linguagem natural |
-| `checks` | Comandos de verificação executados após cada iteração |
-| `constraints` | Proibições explícitas para os agentes |
-| `max_iterations` | Limite de iterações do ciclo |
-| `allowed_installs` | Pacotes permitidos para instalação (vazio = nenhum) |
-| `allow_overwrite` | Se `true`, permite sobrescrever arquivos existentes |
-| `task_name` | Nome usado na branch `agent/<task-name>` |
-
-Copie este arquivo para `agent_contract.md` no repositório alvo antes de executar o runner.
+Initial local contract used to validate the orchestrator itself.

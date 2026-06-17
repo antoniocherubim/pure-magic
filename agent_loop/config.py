@@ -1,55 +1,74 @@
-"""Configurações, limites e regras de segurança centralizadas."""
+"""Central configuration and safety defaults."""
 
 from __future__ import annotations
 
 import re
-from typing import Any
+from dataclasses import dataclass
 
-DEFAULT_MAX_ITERATIONS = 5
-DEFAULT_COST_LIMIT = float("inf")
 DEFAULT_BRANCH_PREFIX = "agent/"
-COMMAND_TIMEOUT_SEC = 120
-ESTIMATED_COST_PER_ITERATION = 0.01
-
-REQUIRED_CONTRACT_FIELDS = ("objective", "checks", "constraints", "max_iterations")
-
+DEFAULT_MAX_ITERATIONS = 5
+DEFAULT_COST_LIMIT = 5.0
+DEFAULT_FAILURE_LIMIT = 3
+DEFAULT_COMMAND_TIMEOUT_SEC = 120
+DEFAULT_ESTIMATED_COST_PER_ITERATION = 0.02
+SUPPORTED_OPERATION_TYPES = ("write_file",)
 PROTECTED_PATHS = (".env", ".git/")
+REQUIRED_CONTRACT_FIELDS = (
+    "objective",
+    "checks",
+    "constraints",
+    "max_iterations",
+    "task_name",
+)
 
-DANGEROUS_COMMAND_PATTERNS: list[re.Pattern[str]] = [
+DANGEROUS_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bsudo\b", re.IGNORECASE),
     re.compile(r"\brm\s+-rf\b", re.IGNORECASE),
     re.compile(r"\bgit\s+push\b", re.IGNORECASE),
-    re.compile(r"\bgit\s+checkout\s+main\b", re.IGNORECASE),
-    re.compile(r"\bgit\s+checkout\s+master\b", re.IGNORECASE),
-    re.compile(r"\bgit\s+switch\s+main\b", re.IGNORECASE),
-    re.compile(r"\bgit\s+switch\s+master\b", re.IGNORECASE),
+    re.compile(r"\bgit\s+(checkout|switch)\s+(main|master)\b", re.IGNORECASE),
     re.compile(r"\.env\b"),
-    re.compile(r"\bchmod\s+777\b", re.IGNORECASE),
-    re.compile(r"\bmkfs\b", re.IGNORECASE),
-    re.compile(r">\s*/dev/", re.IGNORECASE),
-]
-
-SUPPORTED_OPERATION_TYPES = ("write_file",)
+)
 
 
-def load_limits(contract: dict[str, Any]) -> dict[str, Any]:
-    """Mescla limites do contrato com defaults."""
-    max_iterations = contract.get("max_iterations", DEFAULT_MAX_ITERATIONS)
-    cost_limit = contract.get("cost_limit", DEFAULT_COST_LIMIT)
+@dataclass(slots=True)
+class RuntimeLimits:
+    max_iterations: int = DEFAULT_MAX_ITERATIONS
+    cost_limit: float = DEFAULT_COST_LIMIT
+    failure_limit: int = DEFAULT_FAILURE_LIMIT
+    command_timeout_sec: int = DEFAULT_COMMAND_TIMEOUT_SEC
+    estimated_cost_per_iteration: float = DEFAULT_ESTIMATED_COST_PER_ITERATION
+    allow_overwrite: bool = False
+    allowed_installs: list[str] | None = None
 
+
+def build_limits(raw_contract: dict[str, object]) -> RuntimeLimits:
+    """Create normalized runtime limits from contract data."""
+    return RuntimeLimits(
+        max_iterations=_as_int(raw_contract.get("max_iterations"), DEFAULT_MAX_ITERATIONS),
+        cost_limit=_as_float(raw_contract.get("cost_limit"), DEFAULT_COST_LIMIT),
+        failure_limit=_as_int(raw_contract.get("failure_limit"), DEFAULT_FAILURE_LIMIT),
+        command_timeout_sec=_as_int(
+            raw_contract.get("command_timeout_sec"),
+            DEFAULT_COMMAND_TIMEOUT_SEC,
+        ),
+        estimated_cost_per_iteration=_as_float(
+            raw_contract.get("estimated_cost_per_iteration"),
+            DEFAULT_ESTIMATED_COST_PER_ITERATION,
+        ),
+        allow_overwrite=bool(raw_contract.get("allow_overwrite", False)),
+        allowed_installs=list(raw_contract.get("allowed_installs", []) or []),
+    )
+
+
+def _as_int(value: object, default: int) -> int:
     try:
-        max_iterations = int(max_iterations)
+        return int(value)
     except (TypeError, ValueError):
-        max_iterations = DEFAULT_MAX_ITERATIONS
+        return default
 
+
+def _as_float(value: object, default: float) -> float:
     try:
-        cost_limit = float(cost_limit)
+        return float(value)
     except (TypeError, ValueError):
-        cost_limit = DEFAULT_COST_LIMIT
-
-    return {
-        "max_iterations": max_iterations,
-        "cost_limit": cost_limit,
-        "allowed_installs": contract.get("allowed_installs", []),
-        "allow_overwrite": bool(contract.get("allow_overwrite", False)),
-    }
+        return default

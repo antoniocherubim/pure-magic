@@ -1,4 +1,4 @@
-"""Modelos de dados internos do orquestrador."""
+"""Core domain models for the orchestrator."""
 
 from __future__ import annotations
 
@@ -8,134 +8,208 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-
-class AgentRole(str, Enum):
-    PLANNER = "planner"
-    EXECUTOR = "executor"
-    REVIEWER = "reviewer"
+from agent_loop.config import RuntimeLimits
 
 
 class ReviewerDecision(str, Enum):
     CONTINUE = "CONTINUE"
-    OBJECTIVE_COMPLETE = "OBJECTIVE_COMPLETE"
     REVISE = "REVISE"
+    OBJECTIVE_COMPLETE = "OBJECTIVE_COMPLETE"
 
 
-@dataclass
-class Context:
+@dataclass(slots=True)
+class Contract:
+    objective: str
+    checks: list[str]
+    constraints: list[str]
+    max_iterations: int
     task_name: str
-    branch: str
-    iteration: int
-    contract: dict[str, Any]
-    limits: dict[str, Any]
-    cumulative_cost: float
-    work_dir: Path
-    last_diff: str = ""
-    failure_count: int = 0
-    dry_run: bool = True
-    repo_path: Path = field(default_factory=Path)
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["work_dir"] = str(self.work_dir)
-        data["repo_path"] = str(self.repo_path)
-        return data
-
-
-@dataclass
-class AgentResponse:
-    role: AgentRole
-    raw_text: str
-    parsed: dict[str, Any] = field(default_factory=dict)
-    tokens_used_estimate: int | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "role": self.role.value,
-            "raw_text": self.raw_text,
-            "parsed": self.parsed,
-            "tokens_used_estimate": self.tokens_used_estimate,
-        }
-
-
-@dataclass
-class FileOperation:
-    type: str
-    path: str
-    content: str = ""
+    allowed_installs: list[str] = field(default_factory=list)
+    allow_overwrite: bool = False
+    cost_limit: float | None = None
+    failure_limit: int | None = None
+    command_timeout_sec: int | None = None
+    estimated_cost_per_iteration: float | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> FileOperation:
+    def from_dict(cls, data: dict[str, Any]) -> "Contract":
         return cls(
-            type=data.get("type", ""),
-            path=data.get("path", ""),
-            content=data.get("content", ""),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"type": self.type, "path": self.path, "content": self.content}
-
-
-@dataclass
-class LogEntry:
-    iteration: int
-    timestamp: str
-    planner_summary: str
-    executor_ops: list[dict[str, Any]]
-    commands_run: list[dict[str, Any]]
-    test_results: str
-    reviewer_decision: str
-    diff_path: str = ""
-    estimated_cost: float = 0.0
-
-    @classmethod
-    def create(
-        cls,
-        iteration: int,
-        planner_summary: str,
-        executor_ops: list[dict[str, Any]],
-        commands_run: list[dict[str, Any]],
-        test_results: str,
-        reviewer_decision: str,
-        diff_path: str = "",
-        estimated_cost: float = 0.0,
-    ) -> LogEntry:
-        return cls(
-            iteration=iteration,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            planner_summary=planner_summary,
-            executor_ops=executor_ops,
-            commands_run=commands_run,
-            test_results=test_results,
-            reviewer_decision=reviewer_decision,
-            diff_path=diff_path,
-            estimated_cost=estimated_cost,
+            objective=str(data["objective"]),
+            checks=list(data["checks"]),
+            constraints=list(data["constraints"]),
+            max_iterations=int(data["max_iterations"]),
+            task_name=str(data["task_name"]),
+            allowed_installs=list(data.get("allowed_installs", []) or []),
+            allow_overwrite=bool(data.get("allow_overwrite", False)),
+            cost_limit=_optional_float(data.get("cost_limit")),
+            failure_limit=_optional_int(data.get("failure_limit")),
+            command_timeout_sec=_optional_int(data.get("command_timeout_sec")),
+            estimated_cost_per_iteration=_optional_float(
+                data.get("estimated_cost_per_iteration")
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+
+@dataclass(slots=True)
+class ExecutionContext:
+    repo_path: Path
+    work_dir: Path
+    branch: str
+    contract: Contract
+    limits: RuntimeLimits
+    dry_run: bool
+    iteration: int = 0
+    cumulative_cost: float = 0.0
+    failure_count: int = 0
+    last_diff: str = ""
+
+    @property
+    def task_name(self) -> str:
+        return self.contract.task_name
+
+
+@dataclass(slots=True)
+class FileOperation:
+    type: str
+    path: str
+    content: str | None = None
+    instructions: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FileOperation":
+        return cls(
+            type=str(data.get("type", "")),
+            path=str(data.get("path", "")),
+            content=data.get("content"),
+            instructions=data.get("instructions"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class ExecutorResult:
+    operations: list[FileOperation]
+    commands: list[str]
+    summary: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ExecutorResult":
+        return cls(
+            operations=[FileOperation.from_dict(item) for item in data["operations"]],
+            commands=[str(item) for item in data["commands"]],
+            summary=str(data["summary"]),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "operations": [operation.to_dict() for operation in self.operations],
+            "commands": list(self.commands),
+            "summary": self.summary,
+        }
+
+
+@dataclass(slots=True)
+class CommandResult:
+    command: str
+    returncode: int
+    stdout: str
+    stderr: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class PlannerResult:
+    summary: str
+    tasks: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class ReviewerResult:
+    decision: ReviewerDecision
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "decision": self.decision.value,
+            "reason": self.reason,
+        }
+
+
+@dataclass(slots=True)
+class IterationRecord:
+    iteration: int
+    planner: PlannerResult
+    executor: ExecutorResult
+    commands: list[CommandResult]
+    reviewer: ReviewerResult
+    estimated_cost: float
+    diff_path: str
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
     def to_markdown(self) -> str:
+        command_lines = []
+        for command in self.commands:
+            command_lines.append(
+                f"- `{command.command}` -> returncode `{command.returncode}`"
+            )
+
+        operation_lines = []
+        for operation in self.executor.operations:
+            operation_lines.append(f"- `{operation.type}` `{operation.path}`")
+
         lines = [
             f"## Iteration {self.iteration}",
-            f"**Timestamp:** {self.timestamp}",
-            f"**Estimated cost:** {self.estimated_cost}",
+            f"- Timestamp: `{self.created_at}`",
+            f"- Estimated cost: `{self.estimated_cost}`",
+            f"- Reviewer decision: `{self.reviewer.decision.value}`",
+            f"- Reviewer reason: {self.reviewer.reason}",
             "",
             "### Planner",
-            self.planner_summary,
+            self.planner.summary,
             "",
-            "### Executor operations",
-            str(self.executor_ops),
+            "### Planner Tasks",
+            *(self.planner.tasks or ["- (none)"]),
             "",
-            "### Commands run",
-            str(self.commands_run),
+            "### Executor Summary",
+            self.executor.summary,
             "",
-            "### Test results",
-            self.test_results or "(none)",
+            "### Operations",
+            *(operation_lines or ["- (none)"]),
             "",
-            f"### Reviewer decision: {self.reviewer_decision}",
+            "### Commands",
+            *(command_lines or ["- (none)"]),
+            "",
+            f"### Diff\n`{self.diff_path or '(none)'}`",
+            "",
         ]
-        if self.diff_path:
-            lines.extend(["", f"**Diff:** {self.diff_path}"])
-        lines.append("")
         return "\n".join(lines)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
