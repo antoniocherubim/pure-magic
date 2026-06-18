@@ -57,7 +57,7 @@ allow_overwrite: false
         }
     )
     executor_bridge = ExternalExecutorBridge(
-        provider=lambda context, planner_result, prompt: {
+        provider=lambda request: {
             "operations": [
                 {
                     "type": "write_file",
@@ -80,3 +80,35 @@ allow_overwrite: false
 
     assert exit_code == 0
     assert (temp_repo / "generated.txt").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_external_executor_bridge_builds_explicit_request(temp_repo) -> None:
+    from agent_loop.agents import ExternalExecutorBridge
+    from agent_loop.config import build_limits
+    from agent_loop.models import Contract, ExecutionContext, PlannerResult
+
+    contract = Contract(
+        objective="Create one file",
+        checks=["pytest"],
+        constraints=["Never use sudo"],
+        max_iterations=2,
+        task_name="bridge-contract",
+    )
+    context = ExecutionContext(
+        repo_path=temp_repo,
+        work_dir=temp_repo / "work",
+        branch="agent/bridge-contract",
+        contract=contract,
+        limits=build_limits(contract.to_dict()),
+        dry_run=True,
+        iteration=1,
+    )
+    planner = PlannerResult(summary="Write one file", tasks=["Create file"])
+
+    request = ExternalExecutorBridge().build_request(context, planner)
+
+    assert request.objective == "Create one file"
+    assert request.allowed_commands == ["pytest"]
+    assert request.branch == "agent/bridge-contract"
+    assert request.iteration == 1
+    assert request.plan.summary == "Write one file"

@@ -8,6 +8,7 @@ from typing import Any, Callable, Protocol
 
 from agent_loop.models import (
     ExecutionContext,
+    ExecutorRequest,
     PlannerResult,
     ReviewerDecision,
     ReviewerResult,
@@ -26,7 +27,7 @@ class ChatCompletionClient(Protocol):
 
 PlannerResponder = Callable[[ExecutionContext], dict[str, Any]]
 ReviewerResponder = Callable[[ExecutionContext, dict[str, Any]], dict[str, Any]]
-ExecutorProvider = Callable[[ExecutionContext, PlannerResult, str], dict[str, Any]]
+ExecutorProvider = Callable[[ExecutorRequest], dict[str, Any]]
 
 
 @dataclass(slots=True)
@@ -126,18 +127,35 @@ class ExternalExecutorBridge:
             constraints=context.contract.constraints,
         )
 
-    def run(self, context: ExecutionContext, planner: PlannerResult) -> dict[str, Any]:
+    def build_request(
+        self,
+        context: ExecutionContext,
+        planner: PlannerResult,
+    ) -> ExecutorRequest:
         prompt = self.build_prompt(context, planner)
+        return ExecutorRequest(
+            objective=context.contract.objective,
+            plan=planner,
+            constraints=list(context.contract.constraints),
+            allowed_commands=list(context.contract.checks),
+            branch=context.branch,
+            iteration=context.iteration,
+            repo_path=str(context.repo_path),
+            executor_prompt=prompt,
+        )
+
+    def run(self, context: ExecutionContext, planner: PlannerResult) -> dict[str, Any]:
+        request = self.build_request(context, planner)
         if self.provider is None:
             return {
                 "operations": [],
-                "commands": list(context.contract.checks),
+                "commands": list(request.allowed_commands),
                 "summary": "No external executor was configured, so no file changes were proposed.",
-                "executor_prompt": prompt,
+                "executor_request": request.to_dict(),
             }
 
-        payload = dict(self.provider(context, planner, prompt))
-        payload.setdefault("executor_prompt", prompt)
+        payload = dict(self.provider(request))
+        payload.setdefault("executor_request", request.to_dict())
         return payload
 
 

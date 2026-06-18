@@ -134,6 +134,30 @@ class PlannerResult:
 
 
 @dataclass(slots=True)
+class ExecutorRequest:
+    objective: str
+    plan: PlannerResult
+    constraints: list[str]
+    allowed_commands: list[str]
+    branch: str
+    iteration: int
+    repo_path: str
+    executor_prompt: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "objective": self.objective,
+            "plan": self.plan.to_dict(),
+            "constraints": list(self.constraints),
+            "allowed_commands": list(self.allowed_commands),
+            "branch": self.branch,
+            "iteration": self.iteration,
+            "repo_path": self.repo_path,
+            "executor_prompt": self.executor_prompt,
+        }
+
+
+@dataclass(slots=True)
 class ReviewerResult:
     decision: ReviewerDecision
     reason: str

@@ -33,6 +33,53 @@ Esta implementação inicial foca em:
 
 Nesta fase de desenvolvimento, o projeto já está preparado para um Executor externo via prompt estruturado, enquanto Planner e Reviewer podem continuar locais ou também ser substituídos depois.
 
+## Contrato do Executor Externo
+
+O harness agora trata o Executor como uma interface explícita.
+
+Entrada enviada ao Executor:
+
+```json
+{
+  "objective": "objetivo atual",
+  "plan": {
+    "summary": "plano mínimo",
+    "tasks": ["tarefa 1", "tarefa 2"]
+  },
+  "constraints": ["regra 1", "regra 2"],
+  "allowed_commands": ["pytest"],
+  "branch": "agent/minha-tarefa",
+  "iteration": 1,
+  "repo_path": "/caminho/do/repo",
+  "executor_prompt": "prompt final que o executor deve seguir"
+}
+```
+
+Saída esperada do Executor:
+
+```json
+{
+  "operations": [
+    {
+      "type": "write_file",
+      "path": "src/example.py",
+      "content": "conteudo completo do arquivo"
+    }
+  ],
+  "commands": ["pytest"],
+  "summary": "resumo curto das mudanças"
+}
+```
+
+Regras desse contrato:
+
+- `commands` deve ficar restrito ao que o harness permitir
+- `operations` aceita apenas `write_file` nesta fase
+- `path` deve ser relativo ao repositório
+- `content` deve trazer o conteúdo completo do arquivo
+- o Executor não aplica nada diretamente; ele apenas propõe
+- o harness continua responsável por validar, aplicar, testar e revisar
+
 ## Estrutura
 
 ```text
@@ -74,7 +121,7 @@ Fluxo esperado:
 2. Validar estado do repositório
 3. Garantir branch `agent/<task-name>`
 4. Gerar plano mínimo
-5. Gerar prompt do Executor
+5. Montar `ExecutorRequest`
 6. Receber operações estruturadas
 7. Aplicar mudanças com segurança
 8. Rodar checks
@@ -105,4 +152,4 @@ Também exige repositório limpo antes de mutações reais.
 
 ## Próximo passo recomendado
 
-Conectar um Executor externo que consuma `ExternalExecutorBridge.build_prompt(...)` e devolva o JSON estruturado esperado. Depois disso, o mesmo padrão pode ser expandido para plugar Planner e Reviewer remotos sem mudar o núcleo do harness.
+Conectar um Executor externo que consuma `ExternalExecutorBridge.build_request(...)` e devolva o JSON estruturado esperado. Depois disso, o mesmo padrão pode ser expandido para plugar Planner e Reviewer remotos sem mudar o núcleo do harness.

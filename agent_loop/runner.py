@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Callable
-
 from agent_loop.agents import ExternalExecutorBridge, PlannerAgent, ReviewerAgent
 from agent_loop.config import DEFAULT_BRANCH_PREFIX, build_limits
 from agent_loop.models import ExecutionContext, ExecutorResult, IterationRecord
@@ -21,9 +19,6 @@ from agent_loop.tools import (
     run_command,
     save_iteration_artifacts,
 )
-
-ExecutorProvider = Callable[[ExecutionContext, dict], dict]
-
 
 def run_loop(
     repo_path: str | Path,
