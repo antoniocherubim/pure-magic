@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from agent_loop.models import PlannerResponseError, ReviewerResponseError
+from agent_loop.models import ExecutorResponseError, PlannerResponseError, ReviewerResponseError
 from agent_loop.prompts import (
     parse_contract_md,
+    parse_executor_response,
     parse_planner_response,
     parse_reviewer_response,
     validate_contract,
@@ -63,6 +64,25 @@ def test_validate_executor_response_rejects_modify_file_for_now() -> None:
     }
     errors = validate_executor_response(payload)
     assert any("operations[0].type" in error for error in errors)
+
+
+def test_validate_executor_response_accepts_allowed_command() -> None:
+    payload = {
+        "operations": [],
+        "commands": ["pytest"],
+        "summary": "Run checks",
+    }
+    assert validate_executor_response(payload, allowed_commands=["pytest"]) == []
+
+
+def test_validate_executor_response_rejects_disallowed_command() -> None:
+    payload = {
+        "operations": [],
+        "commands": ["python -m pytest"],
+        "summary": "Run checks",
+    }
+    errors = validate_executor_response(payload, allowed_commands=["pytest"])
+    assert any("commands[0]" in error for error in errors)
 
 
 def test_validate_planner_response_accepts_valid_payload() -> None:
@@ -147,3 +167,26 @@ def test_parse_reviewer_response_accepts_markdown_fence() -> None:
 def test_parse_reviewer_response_raises_on_invalid_json() -> None:
     with pytest.raises(ReviewerResponseError, match="not valid JSON"):
         parse_reviewer_response("not json")
+
+
+def test_parse_executor_response_accepts_raw_json() -> None:
+    parsed = parse_executor_response(
+        '{"operations": [], "commands": ["pytest"], "summary": "No changes"}'
+    )
+    assert parsed == {"operations": [], "commands": ["pytest"], "summary": "No changes"}
+
+
+def test_parse_executor_response_accepts_markdown_fence() -> None:
+    parsed = parse_executor_response(
+        """Result:
+```json
+{"operations": [], "commands": ["pytest"], "summary": "No changes"}
+```
+"""
+    )
+    assert parsed == {"operations": [], "commands": ["pytest"], "summary": "No changes"}
+
+
+def test_parse_executor_response_raises_on_invalid_json() -> None:
+    with pytest.raises(ExecutorResponseError, match="not valid JSON"):
+        parse_executor_response("not json")

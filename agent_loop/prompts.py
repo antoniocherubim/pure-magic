@@ -7,7 +7,12 @@ import re
 from typing import Any
 
 from agent_loop.config import REQUIRED_CONTRACT_FIELDS, SUPPORTED_OPERATION_TYPES
-from agent_loop.models import PlannerResponseError, ReviewerDecision, ReviewerResponseError
+from agent_loop.models import (
+    ExecutorResponseError,
+    PlannerResponseError,
+    ReviewerDecision,
+    ReviewerResponseError,
+)
 
 PLANNER_PROMPT = """You are the Planner agent for a local autonomous coding loop.
 
@@ -199,6 +204,11 @@ def parse_reviewer_response(text: str) -> dict[str, Any]:
     return _parse_json_object_response(text, agent_label="Reviewer", error_type=ReviewerResponseError)
 
 
+def parse_executor_response(text: str) -> dict[str, Any]:
+    """Parse executor JSON from raw model output."""
+    return _parse_json_object_response(text, agent_label="Executor", error_type=ExecutorResponseError)
+
+
 def _parse_json_object_response(
     text: str,
     *,
@@ -235,7 +245,10 @@ def _parse_json_object_response(
     raise error_type(message)
 
 
-def validate_executor_response(payload: dict[str, Any]) -> list[str]:
+def validate_executor_response(
+    payload: dict[str, Any],
+    allowed_commands: list[str] | None = None,
+) -> list[str]:
     errors: list[str] = []
     if not isinstance(payload, dict):
         return ["Executor payload must be a JSON object"]
@@ -266,9 +279,17 @@ def validate_executor_response(payload: dict[str, Any]) -> list[str]:
     if not isinstance(commands, list):
         errors.append("commands must be a list")
     else:
+        allowed = {command.strip() for command in allowed_commands or [] if command.strip()}
         for index, command in enumerate(commands):
             if not isinstance(command, str) or not command.strip():
                 errors.append(f"commands[{index}] must be a non-empty string")
+                continue
+            normalized = command.strip()
+            if allowed_commands is not None and normalized not in allowed:
+                errors.append(
+                    f"commands[{index}] must match an allowed command exactly "
+                    f"(after trimming whitespace): {sorted(allowed)}"
+                )
 
     summary = payload.get("summary")
     if not isinstance(summary, str) or not summary.strip():

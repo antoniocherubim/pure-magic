@@ -25,17 +25,17 @@ Esta implementação inicial foca em:
 - validar restrições e limites
 - exigir branch `agent/<task-name>`
 - gerar prompt do Planner
-- gerar prompt do Executor para outro agente externo
+- gerar prompt do Executor
 - aplicar apenas operações `write_file`
 - rodar checks definidos no contrato
 - registrar logs e artefatos em `work/`
 - decidir continuidade com Reviewer
 
-Nesta fase de desenvolvimento, o projeto já está preparado para um Executor externo via prompt estruturado, enquanto Planner e Reviewer podem continuar locais ou também ser substituídos depois.
+Nesta fase, Planner, Executor e Reviewer são modelados como agentes simétricos em `agent_loop/agents.py`, com suporte a stub local, provider/responder injetado e client OpenAI opcional.
 
-## Contrato do Executor Externo
+## Contrato do Executor
 
-O harness agora trata o Executor como uma interface explícita.
+O harness trata o Executor como um agente de primeira classe (`ExecutorAgent`).
 
 Entrada enviada ao Executor:
 
@@ -73,7 +73,7 @@ Saída esperada do Executor:
 
 Regras desse contrato:
 
-- `commands` deve ficar restrito ao que o harness permitir
+- `commands` deve conter apenas strings que coincidam **exatamente** (após remover espaços nas pontas) com algum item de `allowed_commands` / `checks` do contrato; variantes como `python -m pytest` não são aceitas se o contrato listar só `pytest`
 - `operations` aceita apenas `write_file` nesta fase
 - `path` deve ser relativo ao repositório
 - `content` deve trazer o conteúdo completo do arquivo
@@ -100,7 +100,7 @@ Responsabilidade dos módulos:
 
 - `runner.py`: entrada CLI
 - `agent_loop/runner.py`: loop principal de execução
-- `agent_loop/agents.py`: papéis de Planner, Reviewer e ponte com Executor externo
+- `agent_loop/agents.py`: `PlannerAgent`, `ExecutorAgent` e `ReviewerAgent`
 - `agent_loop/tools.py`: operações seguras de git, subprocess, arquivos e logs
 - `agent_loop/prompts.py`: contratos de prompt e validação de payloads
 - `agent_loop/models.py`: modelos internos e registros de iteração
@@ -152,4 +152,4 @@ Também exige repositório limpo antes de mutações reais.
 
 ## Próximo passo recomendado
 
-Conectar um Executor externo que consuma `ExternalExecutorBridge.build_request(...)` e devolva o JSON estruturado esperado. Depois disso, o mesmo padrão pode ser expandido para plugar Planner e Reviewer remotos sem mudar o núcleo do harness.
+Rodar o loop com `OPENAI_API_KEY` configurada para usar Planner, Executor e Reviewer via API, ou injetar providers/responders customizados em `run_loop(...)` para integrações externas.

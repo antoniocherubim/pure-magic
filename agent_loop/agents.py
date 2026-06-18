@@ -1,4 +1,4 @@
-"""Lightweight Planner/Reviewer agents plus external executor bridge."""
+"""Planner, Executor, and Reviewer agents for the autonomous coding loop."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any, Callable
 from agent_loop.models import (
     ExecutionContext,
     ExecutorRequest,
+    ExecutorResponseError,
     PlannerResponseError,
     PlannerResult,
     ReviewerDecision,
@@ -20,8 +21,10 @@ from agent_loop.prompts import (
     format_executor_prompt,
     format_planner_prompt,
     format_reviewer_prompt,
+    parse_executor_response,
     parse_planner_response,
     parse_reviewer_response,
+    validate_executor_response,
     validate_planner_response,
     validate_reviewer_response,
 )
@@ -162,10 +165,11 @@ class ReviewerAgent:
 
 
 @dataclass(slots=True)
-class ExternalExecutorBridge:
-    """Produces the executor prompt for a separate agent and accepts its JSON response."""
+class ExecutorAgent:
+    """Builds the executor prompt and optionally calls a model client."""
 
     provider: ExecutorProvider | None = None
+    client: ChatCompletionClient | None = None
 
     def build_prompt(self, context: ExecutionContext, planner: PlannerResult) -> str:
         return format_executor_prompt(
@@ -193,16 +197,34 @@ class ExternalExecutorBridge:
 
     def run(self, context: ExecutionContext, planner: PlannerResult) -> dict[str, Any]:
         request = self.build_request(context, planner)
-        if self.provider is None:
-            return {
+
+        if self.provider is not None:
+            payload = dict(self.provider(request))
+            return self._finalize_payload(payload, request)
+
+        if self.client is not None:
+            try:
+                raw = self.client.complete(prompt=request.executor_prompt)
+            except Exception as exc:
+                raise ExecutorResponseError(f"Executor API call failed: {exc}") from exc
+            payload = parse_executor_response(raw)
+            return self._finalize_payload(payload, request)
+
+        return self._finalize_payload(
+            {
                 "operations": [],
                 "commands": list(request.allowed_commands),
                 "summary": "No external executor was configured, so no file changes were proposed.",
-                "executor_request": request.to_dict(),
-            }
+            },
+            request,
+        )
 
-        payload = dict(self.provider(request))
+    @staticmethod
+    def _finalize_payload(payload: dict[str, Any], request: ExecutorRequest) -> dict[str, Any]:
         payload.setdefault("executor_request", request.to_dict())
+        errors = validate_executor_response(payload, allowed_commands=request.allowed_commands)
+        if errors:
+            raise ExecutorResponseError("; ".join(errors))
         return payload
 
 

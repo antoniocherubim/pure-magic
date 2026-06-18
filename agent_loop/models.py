@@ -19,6 +19,10 @@ class ReviewerResponseError(Exception):
     """Raised when the reviewer response cannot be parsed or validated."""
 
 
+class ExecutorResponseError(Exception):
+    """Raised when the executor response cannot be parsed or validated."""
+
+
 class ReviewerDecision(str, Enum):
     CONTINUE = "CONTINUE"
     REVISE = "REVISE"

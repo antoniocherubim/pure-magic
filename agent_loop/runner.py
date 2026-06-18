@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from agent_loop.agents import ExternalExecutorBridge, PlannerAgent, ReviewerAgent
+from agent_loop.agents import ExecutorAgent, PlannerAgent, ReviewerAgent
 from agent_loop.config import DEFAULT_BRANCH_PREFIX, build_limits
 from agent_loop.models import (
     ExecutionContext,
     ExecutorResult,
+    ExecutorResponseError,
     IterationRecord,
     PlannerResponseError,
     ReviewerResponseError,
 )
 from agent_loop.openai_client import create_chat_client_from_env
-from agent_loop.prompts import validate_executor_response
 from agent_loop.tools import (
     ContractError,
     SecurityError,
@@ -34,7 +34,7 @@ def run_loop(
     dry_run: bool = True,
     planner: PlannerAgent | None = None,
     reviewer: ReviewerAgent | None = None,
-    executor_bridge: ExternalExecutorBridge | None = None,
+    executor: ExecutorAgent | None = None,
 ) -> int:
     repo = Path(repo_path).resolve()
     contract_file = Path(contract_path) if contract_path else repo / "agent_contract.md"
@@ -62,7 +62,7 @@ def run_loop(
 
     planner_agent = planner or PlannerAgent(client=create_chat_client_from_env())
     reviewer_agent = reviewer or ReviewerAgent(client=create_chat_client_from_env())
-    bridge = executor_bridge or ExternalExecutorBridge()
+    executor_agent = executor or ExecutorAgent(client=create_chat_client_from_env())
 
     while context.iteration < limits.max_iterations:
         context.iteration += 1
@@ -75,12 +75,12 @@ def run_loop(
                 raise RuntimeError(str(exc)) from exc
             continue
 
-        executor_payload = bridge.run(context, planner_result)
-        validation_errors = validate_executor_response(executor_payload)
-        if validation_errors:
+        try:
+            executor_payload = executor_agent.run(context, planner_result)
+        except ExecutorResponseError as exc:
             context.failure_count += 1
             if context.failure_count >= limits.failure_limit:
-                raise RuntimeError("; ".join(validation_errors))
+                raise RuntimeError(str(exc)) from exc
             continue
 
         executor_result = ExecutorResult.from_dict(executor_payload)
@@ -179,6 +179,13 @@ def main(argv: list[str] | None = None) -> int:
             contract_path=args.contract,
             dry_run=args.dry_run,
         )
-    except (ContractError, SecurityError, RuntimeError, PlannerResponseError, ReviewerResponseError) as exc:
+    except (
+        ContractError,
+        SecurityError,
+        RuntimeError,
+        PlannerResponseError,
+        ReviewerResponseError,
+        ExecutorResponseError,
+    ) as exc:
         print(f"error: {exc}")
         return 1

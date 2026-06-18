@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent_loop.agents import ExternalExecutorBridge, PlannerAgent, ReviewerAgent
-from agent_loop.models import PlannerResult, ReviewerDecision
+from agent_loop.agents import ExecutorAgent, PlannerAgent, ReviewerAgent
+from agent_loop.models import ReviewerDecision
 from agent_loop.runner import run_loop
 
 
@@ -58,7 +58,7 @@ allow_overwrite: false
             "reason": "The file was created and checks passed.",
         }
     )
-    executor_bridge = ExternalExecutorBridge(
+    executor = ExecutorAgent(
         provider=lambda request: {
             "operations": [
                 {
@@ -77,43 +77,28 @@ allow_overwrite: false
         dry_run=False,
         planner=planner,
         reviewer=reviewer,
-        executor_bridge=executor_bridge,
+        executor=executor,
     )
 
     assert exit_code == 0
     assert (temp_repo / "generated.txt").read_text(encoding="utf-8") == "hello\n"
 
 
-def test_external_executor_bridge_builds_explicit_request(temp_repo) -> None:
-    from agent_loop.agents import ExternalExecutorBridge
-    from agent_loop.config import build_limits
-    from agent_loop.models import Contract, ExecutionContext, PlannerResult
-
-    contract = Contract(
-        objective="Create one file",
-        checks=["pytest"],
-        constraints=["Never use sudo"],
-        max_iterations=2,
-        task_name="bridge-contract",
+def _loop_agents_for_reviewer_tests() -> tuple[PlannerAgent, ExecutorAgent]:
+    planner = PlannerAgent(
+        responder=lambda context: {
+            "summary": "Create one file",
+            "tasks": ["Write a file"],
+        }
     )
-    context = ExecutionContext(
-        repo_path=temp_repo,
-        work_dir=temp_repo / "work",
-        branch="agent/bridge-contract",
-        contract=contract,
-        limits=build_limits(contract.to_dict()),
-        dry_run=True,
-        iteration=1,
+    executor = ExecutorAgent(
+        provider=lambda request: {
+            "operations": [],
+            "commands": ["pytest"],
+            "summary": "No file changes",
+        }
     )
-    planner = PlannerResult(summary="Write one file", tasks=["Create file"])
-
-    request = ExternalExecutorBridge().build_request(context, planner)
-
-    assert request.objective == "Create one file"
-    assert request.allowed_commands == ["pytest"]
-    assert request.branch == "agent/bridge-contract"
-    assert request.iteration == 1
-    assert request.plan.summary == "Write one file"
+    return planner, executor
 
 
 def test_run_loop_retries_after_transient_planner_api_failure(temp_repo) -> None:
@@ -212,7 +197,7 @@ allow_overwrite: false
             "reason": "The file was created and checks passed.",
         }
     )
-    executor_bridge = ExternalExecutorBridge(
+    executor = ExecutorAgent(
         provider=lambda request: {
             "operations": [
                 {
@@ -232,28 +217,11 @@ allow_overwrite: false
         dry_run=False,
         planner=planner,
         reviewer=reviewer,
-        executor_bridge=executor_bridge,
+        executor=executor,
     )
 
     assert exit_code == 0
     assert (temp_repo / "generated.txt").read_text(encoding="utf-8") == "hello\n"
-
-
-def _loop_agents_for_reviewer_tests() -> tuple[PlannerAgent, ExternalExecutorBridge]:
-    planner = PlannerAgent(
-        responder=lambda context: {
-            "summary": "Create one file",
-            "tasks": ["Write a file"],
-        }
-    )
-    executor_bridge = ExternalExecutorBridge(
-        provider=lambda request: {
-            "operations": [],
-            "commands": ["pytest"],
-            "summary": "No file changes",
-        }
-    )
-    return planner, executor_bridge
 
 
 def test_run_loop_retries_after_transient_reviewer_api_failure(temp_repo) -> None:
@@ -283,14 +251,14 @@ allow_overwrite: false
                 raise ConnectionError("transient API failure")
             return '{"decision": "CONTINUE", "reason": "Proceed to next iteration."}'
 
-    planner, executor_bridge = _loop_agents_for_reviewer_tests()
+    planner, executor = _loop_agents_for_reviewer_tests()
     client = FlakyReviewerClient()
     exit_code = run_loop(
         repo_path=temp_repo,
         dry_run=True,
         planner=planner,
         reviewer=ReviewerAgent(client=client),
-        executor_bridge=executor_bridge,
+        executor=executor,
     )
 
     assert exit_code == 0
@@ -318,7 +286,7 @@ allow_overwrite: false
         def complete(self, *, prompt: str) -> str:
             raise ConnectionError("persistent API failure")
 
-    planner, executor_bridge = _loop_agents_for_reviewer_tests()
+    planner, executor = _loop_agents_for_reviewer_tests()
 
     with pytest.raises(RuntimeError, match="Reviewer API call failed"):
         run_loop(
@@ -326,5 +294,53 @@ allow_overwrite: false
             dry_run=True,
             planner=planner,
             reviewer=ReviewerAgent(client=AlwaysFailingReviewerClient()),
-            executor_bridge=executor_bridge,
+            executor=executor,
         )
+
+
+def test_run_loop_retries_after_transient_executor_api_failure(temp_repo) -> None:
+    (temp_repo / "agent_contract.md").write_text(
+        """---
+objective: Retry executor failures
+checks:
+  - pytest
+constraints:
+  - Never run sudo
+max_iterations: 5
+failure_limit: 3
+task_name: executor-retry
+allow_overwrite: false
+---
+""",
+        encoding="utf-8",
+    )
+
+    class FlakyExecutorClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, *, prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                raise ConnectionError("transient API failure")
+            return (
+                '{"operations": [], "commands": ["pytest"], '
+                '"summary": "No file changes"}'
+            )
+
+    planner = PlannerAgent(
+        responder=lambda context: {
+            "summary": "Create one file",
+            "tasks": ["Write a file"],
+        }
+    )
+    client = FlakyExecutorClient()
+    exit_code = run_loop(
+        repo_path=temp_repo,
+        dry_run=True,
+        planner=planner,
+        executor=ExecutorAgent(client=client),
+    )
+
+    assert exit_code == 0
+    assert client.calls == 2
