@@ -27,7 +27,7 @@ allow_overwrite: false
 
     assert exit_code == 0
     assert (temp_repo / "work" / "agent_log.md").exists()
-    assert (temp_repo / "work" / "reviewer_iter_1.json").exists()
+    assert (temp_repo / "work" / "iterations" / "1" / "reviewer_response.json").exists()
 
 
 def test_run_loop_applies_write_file_and_completes(temp_repo) -> None:

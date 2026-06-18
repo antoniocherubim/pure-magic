@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from agent_loop.config import (
     DEFAULT_BRANCH_PREFIX,
     PROTECTED_PATHS,
 )
-from agent_loop.models import CommandResult, Contract, FileOperation, IterationRecord
+from agent_loop.models import CommandResult, Contract, FileOperation, IterationAudit
 from agent_loop.prompts import parse_contract_md, validate_contract
 
 
@@ -229,38 +230,136 @@ def collect_diff(repo_path: Path, dry_run: bool) -> str:
     return result.stdout
 
 
-def save_iteration_artifacts(
-    work_dir: Path,
-    record: IterationRecord,
-    diff_text: str,
-) -> None:
-    work_dir.mkdir(parents=True, exist_ok=True)
-    if diff_text:
-        diff_path = work_dir / f"diff_iter_{record.iteration}.patch"
-        diff_path.write_text(diff_text, encoding="utf-8")
+def iteration_artifact_dir(work_dir: Path, iteration: int) -> Path:
+    return work_dir / "iterations" / str(iteration)
 
-    reviewer_path = work_dir / f"reviewer_iter_{record.iteration}.json"
-    reviewer_path.write_text(
-        json.dumps(record.reviewer.to_dict(), indent=2, ensure_ascii=False),
+
+def write_iteration_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def write_iteration_json(path: Path, data: dict[str, Any] | list[Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    executor_path = work_dir / f"executor_iter_{record.iteration}.json"
-    executor_path.write_text(
-        json.dumps(record.executor.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
 
-    append_log(work_dir / "agent_log.md", record)
+@dataclass(slots=True)
+class IterationArtifactWriter:
+    work_dir: Path
+    iteration: int
+    _written: list[str] = field(default_factory=list)
+    iteration_dir: Path = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.iteration_dir = iteration_artifact_dir(self.work_dir, self.iteration)
+        self.iteration_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def artifact_dir_rel(self) -> str:
+        return self.iteration_dir.relative_to(self.work_dir).as_posix()
+
+    def artifact_files(self) -> tuple[str, ...]:
+        return tuple(self._written)
+
+    def save_planner_prompt(self, text: str) -> Path:
+        return self._write_text("planner_prompt.txt", text)
+
+    def save_planner_response(self, data: dict[str, Any]) -> Path:
+        return self._write_json("planner_response.json", data)
+
+    def save_planner_error(self, error: str) -> Path:
+        return self.save_planner_response({"error": error})
+
+    def save_executor_request(self, data: dict[str, Any]) -> Path:
+        return self._write_json("executor_request.json", data)
+
+    def save_executor_response(self, data: dict[str, Any]) -> Path:
+        return self._write_json("executor_response.json", data)
+
+    def save_executor_error(self, error: str) -> Path:
+        return self.save_executor_response({"error": error})
+
+    def save_reviewer_prompt(self, text: str) -> Path:
+        return self._write_text("reviewer_prompt.txt", text)
+
+    def save_reviewer_response(self, data: dict[str, Any]) -> Path:
+        return self._write_json("reviewer_response.json", data)
+
+    def save_reviewer_error(self, error: str) -> Path:
+        return self.save_reviewer_response({"error": error})
+
+    def save_apply_operations_error(self, error: str) -> Path:
+        return self._write_json(
+            "apply_operations_error.json",
+            {"stage": "apply_operations", "error": error},
+        )
+
+    def save_checks_error(self, error: str) -> Path:
+        return self._write_json(
+            "checks_error.json",
+            {"stage": "checks", "error": error},
+        )
+
+    def save_diff_error(self, error: str) -> Path:
+        return self._write_json(
+            "diff_error.json",
+            {"stage": "diff", "error": error},
+        )
+
+    def save_commands(self, commands: list[dict[str, Any]]) -> Path:
+        return self._write_json("commands.json", commands)
+
+    def save_diff(self, diff_text: str) -> Path:
+        return self._write_text("diff.patch", diff_text)
+
+    def save_meta(
+        self,
+        *,
+        status: str,
+        failed_stage: str | None = None,
+        error: str | None = None,
+    ) -> Path:
+        return self._write_json(
+            "meta.json",
+            {
+                "iteration": self.iteration,
+                "status": status,
+                "failed_stage": failed_stage,
+                "error": error,
+                "artifact_dir": self.artifact_dir_rel,
+                "files": list(self.artifact_files()),
+            },
+        )
+
+    def _write_text(self, filename: str, content: str) -> Path:
+        path = self.iteration_dir / filename
+        write_iteration_text(path, content)
+        self._track(filename)
+        return path
+
+    def _write_json(self, filename: str, data: dict[str, Any] | list[Any]) -> Path:
+        path = self.iteration_dir / filename
+        write_iteration_json(path, data)
+        self._track(filename)
+        return path
+
+    def _track(self, filename: str) -> None:
+        if filename not in self._written:
+            self._written.append(filename)
 
 
-def append_log(log_path: Path, record: IterationRecord) -> None:
+def append_iteration_log(work_dir: Path, audit: IterationAudit) -> None:
+    log_path = work_dir / "agent_log.md"
     header = ""
     if not log_path.exists():
         header = "# Agent Log\n\n"
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(header)
-        handle.write(record.to_markdown())
+        handle.write(audit.to_markdown())
 
 
 def _run(

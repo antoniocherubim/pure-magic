@@ -80,6 +80,28 @@ Regras desse contrato:
 - o Executor não aplica nada diretamente; ele apenas propõe
 - o harness continua responsável por validar, aplicar, testar e revisar
 
+## Artefatos por iteração
+
+Cada iteração grava material de auditoria em `work/iterations/<n>/`, inclusive quando planner, executor ou reviewer falham:
+
+```text
+work/
+  agent_log.md
+  iterations/
+    1/
+      meta.json
+      planner_prompt.txt
+      planner_response.json
+      executor_request.json
+      executor_response.json
+      reviewer_prompt.txt
+      reviewer_response.json
+      commands.json
+      diff.patch
+```
+
+O `agent_log.md` referencia explicitamente os arquivos da iteração. Em falhas, o diretório contém prompts/responses parciais e `meta.json` com `failed_stage` e `error`.
+
 ## Estrutura
 
 ```text

@@ -77,6 +77,8 @@ class ExecutionContext:
     cumulative_cost: float = 0.0
     failure_count: int = 0
     last_diff: str = ""
+    last_error: str = ""
+    last_failed_stage: str | None = None
 
     @property
     def task_name(self) -> str:
@@ -179,6 +181,49 @@ class ReviewerResult:
             "decision": self.decision.value,
             "reason": self.reason,
         }
+
+
+@dataclass(slots=True)
+class IterationAudit:
+    iteration: int
+    status: str
+    failed_stage: str | None
+    error: str | None
+    artifact_dir: str
+    planner_summary: str | None = None
+    executor_summary: str | None = None
+    reviewer_decision: str | None = None
+    estimated_cost: float | None = None
+    artifact_files: tuple[str, ...] = ()
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    def to_markdown(self) -> str:
+        lines = [
+            f"## Iteration {self.iteration}",
+            f"- Timestamp: `{self.created_at}`",
+            f"- Status: `{self.status}`",
+        ]
+        if self.estimated_cost is not None:
+            lines.append(f"- Estimated cost: `{self.estimated_cost}`")
+        if self.failed_stage:
+            lines.append(f"- Failed stage: `{self.failed_stage}`")
+        if self.error:
+            lines.append(f"- Error: {self.error}")
+        if self.planner_summary:
+            lines.append(f"- Planner summary: {self.planner_summary}")
+        if self.executor_summary:
+            lines.append(f"- Executor summary: {self.executor_summary}")
+        if self.reviewer_decision:
+            lines.append(f"- Reviewer decision: `{self.reviewer_decision}`")
+        lines.append(f"- Artifact directory: `{self.artifact_dir}`")
+        if self.artifact_files:
+            lines.append("- Artifacts:")
+            for artifact_file in self.artifact_files:
+                lines.append(f"  - `{self.artifact_dir}/{artifact_file}`")
+        lines.append("")
+        return "\n".join(lines)
 
 
 @dataclass(slots=True)
