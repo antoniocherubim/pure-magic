@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from agent_loop.models import CheckStatus, PreviousIterationSummary
+from agent_loop.models import CheckStatus, PreviousIterationSummary, ReviewerDecision
 from agent_loop.prompts import (
     EXECUTOR_CORRECTION_GUIDANCE,
+    EXECUTOR_REVISE_GUIDANCE,
     PLANNER_CORRECTION_GUIDANCE,
+    PLANNER_REVISE_GUIDANCE,
     format_executor_correction_guidance,
     format_executor_prompt,
     format_planner_correction_guidance,
@@ -53,9 +55,21 @@ EXECUTOR_STAGE_MARKERS = {
     "planner": "failed before execution",
     "executor": "same operations, commands, or summary",
     "apply_operations": "same write_file operations",
-    "checks": "same commands from the previous iteration",
+    "checks": "contract allowlist",
     "diff": "prevented diff collection",
 }
+
+
+def _revise_summary() -> PreviousIterationSummary:
+    return PreviousIterationSummary(
+        iteration=1,
+        status="completed",
+        artifact_dir="iterations/1",
+        planner_summary="Previous plan",
+        executor_summary="Previous exec",
+        reviewer_decision=ReviewerDecision.REVISE.value,
+        checks=[CheckStatus(command="pytest", status="passed", returncode=0)],
+    )
 
 
 @pytest.mark.parametrize("failed_stage", list(PLANNER_STAGE_MARKERS))
@@ -108,13 +122,13 @@ def test_correction_guidance_differs_across_failed_stages() -> None:
                 iteration=1,
                 status="completed",
                 artifact_dir="iterations/1",
-                reviewer_decision="REVISE",
+                reviewer_decision=ReviewerDecision.CONTINUE.value,
             ),
-            "(none - previous iteration did not fail)",
+            "(none - previous iteration did not fail or request revision)",
         ),
     ],
 )
-def test_planner_correction_guidance_neutral_without_failure(
+def test_planner_correction_guidance_neutral_without_correction_trigger(
     previous_iteration: PreviousIterationSummary | None,
     expected: str,
 ) -> None:
@@ -123,6 +137,47 @@ def test_planner_correction_guidance_neutral_without_failure(
     prompt = format_planner_prompt(_CONTRACT, previous_iteration=previous_iteration)
     assert expected in prompt
     assert "Failed stage:" not in prompt
+    assert "Reviewer decision: REVISE" not in prompt
+
+
+def test_planner_correction_guidance_active_for_completed_revise() -> None:
+    summary = _revise_summary()
+    guidance = format_planner_correction_guidance(summary)
+
+    assert "Reviewer decision: REVISE" in guidance
+    assert PLANNER_REVISE_GUIDANCE in guidance
+    assert "Reference previous planner summary: Previous plan" in guidance
+
+    prompt = format_planner_prompt(_CONTRACT, previous_iteration=summary)
+    assert "Correction strategy:" in prompt
+    assert "do not blindly repeat the previous plan" in prompt
+
+
+def test_executor_correction_guidance_active_for_completed_revise() -> None:
+    summary = _revise_summary()
+    guidance = format_executor_correction_guidance(summary)
+
+    assert "Reviewer decision: REVISE" in guidance
+    assert EXECUTOR_REVISE_GUIDANCE in guidance
+    assert "Keep commands within the contract allowlist" in guidance
+
+    prompt = format_executor_prompt(
+        objective="Build feature",
+        plan=_PLAN,
+        constraints=["Never use sudo"],
+        previous_iteration=summary,
+    )
+    assert "Reviewer decision: REVISE" in prompt
+    assert "Do not blindly repeat the same approach" in prompt
+
+
+def test_executor_checks_guidance_respects_single_command_allowlist() -> None:
+    guidance = format_executor_correction_guidance(_failed_summary("checks"))
+
+    assert "contract allowlist" in guidance
+    assert "If the command must stay the same" in guidance
+    assert "Do not repeat exactly the same commands" not in guidance
+    assert EXECUTOR_CORRECTION_GUIDANCE["checks"] in guidance
 
 
 def test_executor_correction_guidance_references_previous_checks() -> None:

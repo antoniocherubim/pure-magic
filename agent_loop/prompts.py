@@ -133,8 +133,9 @@ EXECUTOR_CORRECTION_GUIDANCE: dict[str, str] = {
         "Change path, content, or reduce scope."
     ),
     "checks": (
-        "Do not repeat exactly the same commands from the previous iteration. "
-        "Change approach or reduce scope before running checks again."
+        "Do not blindly repeat the same approach. "
+        "Keep commands within the contract allowlist. "
+        "If the command must stay the same, change scope, files touched, or the order of changes before running checks again."
     ),
     "diff": (
         "Do not repeat the same set of changes that prevented diff collection. "
@@ -150,6 +151,17 @@ DEFAULT_EXECUTOR_CORRECTION_GUIDANCE = (
     "Propose a minimal adjusted change set."
 )
 
+PLANNER_REVISE_GUIDANCE = (
+    "Adjust the plan based on the reviewer's feedback. "
+    "Propose the smallest corrective next step; do not blindly repeat the previous plan."
+)
+
+EXECUTOR_REVISE_GUIDANCE = (
+    "Adjust your proposal based on the previous iteration and reviewer feedback. "
+    "Do not blindly repeat the same approach; change files, scope, or implementation details as needed. "
+    "Keep commands within the contract allowlist."
+)
+
 
 def format_previous_iteration(
     previous_iteration: PreviousIterationSummary | None,
@@ -157,6 +169,32 @@ def format_previous_iteration(
     if previous_iteration is None:
         return "(none - first iteration)"
     return json.dumps(previous_iteration.to_dict(), indent=2, ensure_ascii=False)
+
+
+def _is_revise_trigger(previous_iteration: PreviousIterationSummary) -> bool:
+    return (
+        previous_iteration.status == "completed"
+        and previous_iteration.reviewer_decision == ReviewerDecision.REVISE.value
+    )
+
+
+def _append_iteration_references(
+    lines: list[str],
+    previous_iteration: PreviousIterationSummary,
+) -> None:
+    if previous_iteration.planner_summary:
+        lines.append(
+            f"- Reference previous planner summary: {previous_iteration.planner_summary}"
+        )
+    if previous_iteration.executor_summary:
+        lines.append(
+            f"- Reference previous executor summary: {previous_iteration.executor_summary}"
+        )
+    if previous_iteration.checks:
+        check_lines = [
+            f"{check.command} ({check.status})" for check in previous_iteration.checks
+        ]
+        lines.append(f"- Reference previous checks: {', '.join(check_lines)}")
 
 
 def _format_failed_correction_guidance(
@@ -175,21 +213,22 @@ def _format_failed_correction_guidance(
         "Instructions:",
         f"- {instructions}",
     ]
+    _append_iteration_references(lines, previous_iteration)
+    return "\n".join(lines)
 
-    if previous_iteration.planner_summary:
-        lines.append(
-            f"- Reference previous planner summary: {previous_iteration.planner_summary}"
-        )
-    if previous_iteration.executor_summary:
-        lines.append(
-            f"- Reference previous executor summary: {previous_iteration.executor_summary}"
-        )
-    if previous_iteration.checks:
-        check_lines = [
-            f"{check.command} ({check.status})" for check in previous_iteration.checks
-        ]
-        lines.append(f"- Reference previous checks: {', '.join(check_lines)}")
 
+def _format_revise_correction_guidance(
+    previous_iteration: PreviousIterationSummary,
+    *,
+    instructions: str,
+) -> str:
+    lines = [
+        f"Reviewer decision: {ReviewerDecision.REVISE.value}",
+        "",
+        "Instructions:",
+        f"- {instructions}",
+    ]
+    _append_iteration_references(lines, previous_iteration)
     return "\n".join(lines)
 
 
@@ -198,13 +237,18 @@ def format_planner_correction_guidance(
 ) -> str:
     if previous_iteration is None:
         return "(none - first iteration)"
-    if previous_iteration.status != "failed":
-        return "(none - previous iteration did not fail)"
-    return _format_failed_correction_guidance(
-        previous_iteration,
-        stage_guidance=PLANNER_CORRECTION_GUIDANCE,
-        default_guidance=DEFAULT_PLANNER_CORRECTION_GUIDANCE,
-    )
+    if previous_iteration.status == "failed":
+        return _format_failed_correction_guidance(
+            previous_iteration,
+            stage_guidance=PLANNER_CORRECTION_GUIDANCE,
+            default_guidance=DEFAULT_PLANNER_CORRECTION_GUIDANCE,
+        )
+    if _is_revise_trigger(previous_iteration):
+        return _format_revise_correction_guidance(
+            previous_iteration,
+            instructions=PLANNER_REVISE_GUIDANCE,
+        )
+    return "(none - previous iteration did not fail or request revision)"
 
 
 def format_executor_correction_guidance(
@@ -212,13 +256,18 @@ def format_executor_correction_guidance(
 ) -> str:
     if previous_iteration is None:
         return "(none - first iteration)"
-    if previous_iteration.status != "failed":
-        return "(none - previous iteration did not fail)"
-    return _format_failed_correction_guidance(
-        previous_iteration,
-        stage_guidance=EXECUTOR_CORRECTION_GUIDANCE,
-        default_guidance=DEFAULT_EXECUTOR_CORRECTION_GUIDANCE,
-    )
+    if previous_iteration.status == "failed":
+        return _format_failed_correction_guidance(
+            previous_iteration,
+            stage_guidance=EXECUTOR_CORRECTION_GUIDANCE,
+            default_guidance=DEFAULT_EXECUTOR_CORRECTION_GUIDANCE,
+        )
+    if _is_revise_trigger(previous_iteration):
+        return _format_revise_correction_guidance(
+            previous_iteration,
+            instructions=EXECUTOR_REVISE_GUIDANCE,
+        )
+    return "(none - previous iteration did not fail or request revision)"
 
 
 def format_planner_prompt(

@@ -173,6 +173,9 @@ def test_second_iteration_receives_previous_context_after_revise(temp_repo) -> N
     assert "Exec summary for iteration 1" in planner_prompt
     assert '"reviewer_decision": "REVISE"' in planner_prompt
     assert '"status": "passed"' in planner_prompt
+    assert "Correction strategy:" in planner_prompt
+    assert "Reviewer decision: REVISE" in planner_prompt
+    assert "do not blindly repeat the previous plan" in planner_prompt
 
     previous = executor_request["previous_iteration"]
     assert previous["artifact_dir"] == "iterations/1"
@@ -183,6 +186,8 @@ def test_second_iteration_receives_previous_context_after_revise(temp_repo) -> N
         {"command": "python3 -c pass", "status": "passed", "returncode": 0},
     ]
     assert "Previous iteration (most recent only):" in executor_request["executor_prompt"]
+    assert "Reviewer decision: REVISE" in executor_request["executor_prompt"]
+    assert "Keep commands within the contract allowlist" in executor_request["executor_prompt"]
 
 
 def test_second_iteration_receives_failed_checks_context(temp_repo, monkeypatch) -> None:
@@ -257,7 +262,8 @@ def test_second_iteration_receives_failed_checks_context(temp_repo, monkeypatch)
     assert previous["failed_stage"] == "checks"
     assert "Correction strategy:" in executor_request["executor_prompt"]
     assert "Failed stage: checks" in executor_request["executor_prompt"]
-    assert "same commands from the previous iteration" in executor_request["executor_prompt"]
+    assert "contract allowlist" in executor_request["executor_prompt"]
+    assert "same commands from the previous iteration" not in executor_request["executor_prompt"]
     assert previous["checks"] == [
         {"command": "python3 -c pass", "status": "error", "returncode": None},
     ]
