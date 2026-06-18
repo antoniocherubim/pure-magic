@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -11,6 +12,9 @@ DEFAULT_COST_LIMIT = 5.0
 DEFAULT_FAILURE_LIMIT = 3
 DEFAULT_COMMAND_TIMEOUT_SEC = 120
 DEFAULT_ESTIMATED_COST_PER_ITERATION = 0.02
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+OPENAI_MODEL_ENV = "OPENAI_MODEL"
 SUPPORTED_OPERATION_TYPES = ("write_file",)
 PROTECTED_PATHS = (".env", ".git/")
 REQUIRED_CONTRACT_FIELDS = (
@@ -28,6 +32,21 @@ DANGEROUS_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bgit\s+(checkout|switch)\s+(main|master)\b", re.IGNORECASE),
     re.compile(r"\.env\b"),
 )
+
+
+@dataclass(slots=True)
+class OpenAISettings:
+    api_key: str
+    model: str = DEFAULT_OPENAI_MODEL
+
+
+def load_openai_settings() -> OpenAISettings | None:
+    """Load OpenAI settings from environment variables."""
+    api_key = os.environ.get(OPENAI_API_KEY_ENV, "").strip()
+    if not api_key:
+        return None
+    model = os.environ.get(OPENAI_MODEL_ENV, DEFAULT_OPENAI_MODEL).strip()
+    return OpenAISettings(api_key=api_key, model=model or DEFAULT_OPENAI_MODEL)
 
 
 @dataclass(slots=True)

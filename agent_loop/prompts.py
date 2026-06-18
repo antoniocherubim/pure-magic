@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from agent_loop.config import REQUIRED_CONTRACT_FIELDS, SUPPORTED_OPERATION_TYPES
-from agent_loop.models import ReviewerDecision
+from agent_loop.models import PlannerResponseError, ReviewerDecision
 
 PLANNER_PROMPT = """You are the Planner agent for a local autonomous coding loop.
 
@@ -142,6 +142,60 @@ def validate_contract(raw_contract: dict[str, Any]) -> list[str]:
         errors.append("max_iterations must be an integer")
 
     return errors
+
+
+def validate_planner_response(payload: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["Planner payload must be a JSON object"]
+
+    summary = payload.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        errors.append("summary must be a non-empty string")
+
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        errors.append("tasks must be a list")
+    elif not tasks:
+        errors.append("tasks must contain at least one item")
+    else:
+        for index, task in enumerate(tasks):
+            if not isinstance(task, str) or not task.strip():
+                errors.append(f"tasks[{index}] must be a non-empty string")
+
+    return errors
+
+
+def parse_planner_response(text: str) -> dict[str, Any]:
+    """Parse planner JSON from raw model output."""
+    stripped = text.strip()
+    if not stripped:
+        raise PlannerResponseError("Planner response was empty")
+
+    candidates = [stripped]
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
+    if fence_match:
+        candidates.insert(0, fence_match.group(1).strip())
+
+    brace_match = re.search(r"(\{.*\})", stripped, re.DOTALL)
+    if brace_match and brace_match.group(1) not in candidates:
+        candidates.append(brace_match.group(1).strip())
+
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(data, dict):
+            return data
+        raise PlannerResponseError("Planner response must be a JSON object")
+
+    message = "Planner response is not valid JSON"
+    if last_error is not None:
+        message = f"{message}: {last_error.msg}"
+    raise PlannerResponseError(message)
 
 
 def validate_executor_response(payload: dict[str, Any]) -> list[str]:

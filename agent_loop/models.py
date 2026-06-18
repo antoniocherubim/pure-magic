@@ -11,6 +11,10 @@ from typing import Any
 from agent_loop.config import RuntimeLimits
 
 
+class PlannerResponseError(Exception):
+    """Raised when the planner response cannot be parsed or validated."""
+
+
 class ReviewerDecision(str, Enum):
     CONTINUE = "CONTINUE"
     REVISE = "REVISE"

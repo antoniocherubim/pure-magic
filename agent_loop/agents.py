@@ -4,25 +4,24 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 from agent_loop.models import (
     ExecutionContext,
     ExecutorRequest,
+    PlannerResponseError,
     PlannerResult,
     ReviewerDecision,
     ReviewerResult,
 )
+from agent_loop.openai_client import ChatCompletionClient
 from agent_loop.prompts import (
     format_executor_prompt,
     format_planner_prompt,
     format_reviewer_prompt,
+    parse_planner_response,
+    validate_planner_response,
 )
-
-
-class ChatCompletionClient(Protocol):
-    def responses(self) -> Any:  # pragma: no cover - protocol only
-        raise NotImplementedError
 
 
 PlannerResponder = Callable[[ExecutionContext], dict[str, Any]]
@@ -35,21 +34,36 @@ class PlannerAgent:
     """Builds the planner prompt and optionally calls a model client."""
 
     responder: PlannerResponder | None = None
+    client: ChatCompletionClient | None = None
 
     def build_prompt(self, context: ExecutionContext) -> str:
         return format_planner_prompt(context.contract.to_dict())
 
     def run(self, context: ExecutionContext) -> PlannerResult:
-        if self.responder is None:
-            return PlannerResult(
-                summary="Break the objective into the smallest safe implementation step.",
-                tasks=[
-                    "Read the contract and constraints",
-                    "Prepare the smallest code or file update",
-                    "Run the requested verification commands",
-                ],
-            )
-        payload = self.responder(context)
+        if self.responder is not None:
+            payload = self.responder(context)
+            return self._to_result(payload)
+
+        if self.client is not None:
+            prompt = self.build_prompt(context)
+            raw = self.client.complete(prompt=prompt)
+            payload = parse_planner_response(raw)
+            errors = validate_planner_response(payload)
+            if errors:
+                raise PlannerResponseError("; ".join(errors))
+            return self._to_result(payload)
+
+        return PlannerResult(
+            summary="Break the objective into the smallest safe implementation step.",
+            tasks=[
+                "Read the contract and constraints",
+                "Prepare the smallest code or file update",
+                "Run the requested verification commands",
+            ],
+        )
+
+    @staticmethod
+    def _to_result(payload: dict[str, Any]) -> PlannerResult:
         return PlannerResult(
             summary=str(payload.get("summary", "")),
             tasks=[str(item) for item in payload.get("tasks", [])],

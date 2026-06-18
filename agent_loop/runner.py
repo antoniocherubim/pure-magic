@@ -6,7 +6,8 @@ import argparse
 from pathlib import Path
 from agent_loop.agents import ExternalExecutorBridge, PlannerAgent, ReviewerAgent
 from agent_loop.config import DEFAULT_BRANCH_PREFIX, build_limits
-from agent_loop.models import ExecutionContext, ExecutorResult, IterationRecord
+from agent_loop.models import ExecutionContext, ExecutorResult, IterationRecord, PlannerResponseError
+from agent_loop.openai_client import create_chat_client_from_env
 from agent_loop.prompts import validate_executor_response
 from agent_loop.tools import (
     ContractError,
@@ -51,14 +52,21 @@ def run_loop(
         dry_run=dry_run,
     )
 
-    planner_agent = planner or PlannerAgent()
+    planner_agent = planner or PlannerAgent(client=create_chat_client_from_env())
     reviewer_agent = reviewer or ReviewerAgent()
     bridge = executor_bridge or ExternalExecutorBridge()
 
     while context.iteration < limits.max_iterations:
         context.iteration += 1
 
-        planner_result = planner_agent.run(context)
+        try:
+            planner_result = planner_agent.run(context)
+        except PlannerResponseError as exc:
+            context.failure_count += 1
+            if context.failure_count >= limits.failure_limit:
+                raise RuntimeError(str(exc)) from exc
+            continue
+
         executor_payload = bridge.run(context, planner_result)
         validation_errors = validate_executor_response(executor_payload)
         if validation_errors:
@@ -157,6 +165,6 @@ def main(argv: list[str] | None = None) -> int:
             contract_path=args.contract,
             dry_run=args.dry_run,
         )
-    except (ContractError, SecurityError, RuntimeError) as exc:
+    except (ContractError, SecurityError, RuntimeError, PlannerResponseError) as exc:
         print(f"error: {exc}")
         return 1
