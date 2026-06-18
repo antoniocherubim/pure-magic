@@ -79,10 +79,84 @@ class ExecutionContext:
     last_diff: str = ""
     last_error: str = ""
     last_failed_stage: str | None = None
+    previous_iteration: PreviousIterationSummary | None = None
 
     @property
     def task_name(self) -> str:
         return self.contract.task_name
+
+
+@dataclass(slots=True)
+class CheckStatus:
+    command: str
+    status: str
+    returncode: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_command_result(cls, result: "CommandResult") -> "CheckStatus":
+        status = "passed" if result.returncode == 0 else "failed"
+        return cls(command=result.command, status=status, returncode=result.returncode)
+
+    @classmethod
+    def not_run(cls, command: str) -> "CheckStatus":
+        return cls(command=command, status="not_run", returncode=None)
+
+    @classmethod
+    def error(cls, command: str) -> "CheckStatus":
+        return cls(command=command, status="error", returncode=None)
+
+
+def build_check_statuses(
+    *,
+    results: list["CommandResult"] | None = None,
+    planned_commands: list[str] | None = None,
+    failed_command: str | None = None,
+) -> list[CheckStatus]:
+    statuses: list[CheckStatus] = []
+    executed: set[str] = set()
+
+    for result in results or []:
+        statuses.append(CheckStatus.from_command_result(result))
+        executed.add(result.command)
+
+    if failed_command and failed_command not in executed:
+        statuses.append(CheckStatus.error(failed_command))
+        executed.add(failed_command)
+
+    for command in planned_commands or []:
+        if command not in executed:
+            statuses.append(CheckStatus.not_run(command))
+
+    return statuses
+
+
+@dataclass(slots=True)
+class PreviousIterationSummary:
+    iteration: int
+    status: str
+    artifact_dir: str
+    planner_summary: str | None = None
+    executor_summary: str | None = None
+    reviewer_decision: str | None = None
+    failed_stage: str | None = None
+    error: str | None = None
+    checks: list[CheckStatus] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "iteration": self.iteration,
+            "status": self.status,
+            "artifact_dir": self.artifact_dir,
+            "planner_summary": self.planner_summary,
+            "executor_summary": self.executor_summary,
+            "reviewer_decision": self.reviewer_decision,
+            "failed_stage": self.failed_stage,
+            "error": self.error,
+            "checks": [check.to_dict() for check in self.checks],
+        }
 
 
 @dataclass(slots=True)
@@ -157,9 +231,10 @@ class ExecutorRequest:
     iteration: int
     repo_path: str
     executor_prompt: str
+    previous_iteration: PreviousIterationSummary | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "objective": self.objective,
             "plan": self.plan.to_dict(),
             "constraints": list(self.constraints),
@@ -169,6 +244,9 @@ class ExecutorRequest:
             "repo_path": self.repo_path,
             "executor_prompt": self.executor_prompt,
         }
+        if self.previous_iteration is not None:
+            payload["previous_iteration"] = self.previous_iteration.to_dict()
+        return payload
 
 
 @dataclass(slots=True)

@@ -43,7 +43,10 @@ class PlannerAgent:
     client: ChatCompletionClient | None = None
 
     def build_prompt(self, context: ExecutionContext) -> str:
-        return format_planner_prompt(context.contract.to_dict())
+        return format_planner_prompt(
+            context.contract.to_dict(),
+            previous_iteration=context.previous_iteration,
+        )
 
     def run(self, context: ExecutionContext) -> PlannerResult:
         if self.responder is not None:
@@ -176,6 +179,7 @@ class ExecutorAgent:
             objective=context.contract.objective,
             plan=planner.to_dict(),
             constraints=context.contract.constraints,
+            previous_iteration=context.previous_iteration,
         )
 
     def build_request(
@@ -193,6 +197,7 @@ class ExecutorAgent:
             iteration=context.iteration,
             repo_path=str(context.repo_path),
             executor_prompt=prompt,
+            previous_iteration=context.previous_iteration,
         )
 
     def run(self, context: ExecutionContext, planner: PlannerResult) -> dict[str, Any]:

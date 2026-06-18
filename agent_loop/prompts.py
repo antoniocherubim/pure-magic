@@ -10,6 +10,7 @@ from agent_loop.config import REQUIRED_CONTRACT_FIELDS, SUPPORTED_OPERATION_TYPE
 from agent_loop.models import (
     ExecutorResponseError,
     PlannerResponseError,
+    PreviousIterationSummary,
     ReviewerDecision,
     ReviewerResponseError,
 )
@@ -17,6 +18,12 @@ from agent_loop.models import (
 PLANNER_PROMPT = """You are the Planner agent for a local autonomous coding loop.
 
 Read the contract and return the smallest safe implementation plan.
+
+Previous iteration (most recent only):
+{previous_iteration}
+
+Correction strategy:
+{correction_guidance}
 
 Contract:
 {contract}
@@ -31,6 +38,12 @@ Return JSON only with this shape:
 EXECUTOR_PROMPT = """You are the Executor agent.
 
 Follow the plan exactly, respect all constraints, and return JSON only.
+
+Previous iteration (most recent only):
+{previous_iteration}
+
+Correction strategy:
+{correction_guidance}
 
 Objective:
 {objective}
@@ -83,19 +96,154 @@ Return JSON only with this shape:
 """
 
 
-def format_planner_prompt(contract: dict[str, Any]) -> str:
-    return PLANNER_PROMPT.format(contract=json.dumps(contract, indent=2, ensure_ascii=False))
+PLANNER_CORRECTION_GUIDANCE: dict[str, str] = {
+    "planner": (
+        "Simplify the plan and fix scope or format issues. "
+        "Do not repeat the same task decomposition that failed in the previous planner response."
+    ),
+    "executor": (
+        "Rewrite tasks so the executor can produce valid JSON aligned with the contract. "
+        "Reduce ambiguity and keep the corrective plan minimal."
+    ),
+    "apply_operations": (
+        "Propose the smallest fix for file paths, content, permissions, or overwrite rules. "
+        "Avoid protected paths and forbidden overwrites."
+    ),
+    "checks": (
+        "Address the root cause of the failed or timed-out check. "
+        "Keep verification steps within the contract allowlist."
+    ),
+    "diff": (
+        "Stabilize repository state before proceeding. "
+        "Propose the smallest plan that allows a diff to be collected."
+    ),
+}
+
+EXECUTOR_CORRECTION_GUIDANCE: dict[str, str] = {
+    "planner": (
+        "The previous iteration failed before execution. "
+        "Follow the current plan carefully and do not assume prior changes were applied."
+    ),
+    "executor": (
+        "Do not repeat exactly the same operations, commands, or summary from the previous iteration. "
+        "Adjust the proposal based on the previous error."
+    ),
+    "apply_operations": (
+        "Do not repeat the same write_file operations that caused the previous error. "
+        "Change path, content, or reduce scope."
+    ),
+    "checks": (
+        "Do not repeat exactly the same commands from the previous iteration. "
+        "Change approach or reduce scope before running checks again."
+    ),
+    "diff": (
+        "Do not repeat the same set of changes that prevented diff collection. "
+        "Prefer smaller, verifiable file changes."
+    ),
+}
+
+DEFAULT_PLANNER_CORRECTION_GUIDANCE = (
+    "Propose the smallest safe corrective plan based on the previous failure."
+)
+DEFAULT_EXECUTOR_CORRECTION_GUIDANCE = (
+    "Avoid repeating the previous failed action exactly. "
+    "Propose a minimal adjusted change set."
+)
+
+
+def format_previous_iteration(
+    previous_iteration: PreviousIterationSummary | None,
+) -> str:
+    if previous_iteration is None:
+        return "(none - first iteration)"
+    return json.dumps(previous_iteration.to_dict(), indent=2, ensure_ascii=False)
+
+
+def _format_failed_correction_guidance(
+    previous_iteration: PreviousIterationSummary,
+    *,
+    stage_guidance: dict[str, str],
+    default_guidance: str,
+) -> str:
+    stage = previous_iteration.failed_stage or "unknown"
+    instructions = stage_guidance.get(stage, default_guidance)
+
+    lines = [
+        f"Failed stage: {stage}",
+        f"Error: {previous_iteration.error or '(unknown)'}",
+        "",
+        "Instructions:",
+        f"- {instructions}",
+    ]
+
+    if previous_iteration.planner_summary:
+        lines.append(
+            f"- Reference previous planner summary: {previous_iteration.planner_summary}"
+        )
+    if previous_iteration.executor_summary:
+        lines.append(
+            f"- Reference previous executor summary: {previous_iteration.executor_summary}"
+        )
+    if previous_iteration.checks:
+        check_lines = [
+            f"{check.command} ({check.status})" for check in previous_iteration.checks
+        ]
+        lines.append(f"- Reference previous checks: {', '.join(check_lines)}")
+
+    return "\n".join(lines)
+
+
+def format_planner_correction_guidance(
+    previous_iteration: PreviousIterationSummary | None,
+) -> str:
+    if previous_iteration is None:
+        return "(none - first iteration)"
+    if previous_iteration.status != "failed":
+        return "(none - previous iteration did not fail)"
+    return _format_failed_correction_guidance(
+        previous_iteration,
+        stage_guidance=PLANNER_CORRECTION_GUIDANCE,
+        default_guidance=DEFAULT_PLANNER_CORRECTION_GUIDANCE,
+    )
+
+
+def format_executor_correction_guidance(
+    previous_iteration: PreviousIterationSummary | None,
+) -> str:
+    if previous_iteration is None:
+        return "(none - first iteration)"
+    if previous_iteration.status != "failed":
+        return "(none - previous iteration did not fail)"
+    return _format_failed_correction_guidance(
+        previous_iteration,
+        stage_guidance=EXECUTOR_CORRECTION_GUIDANCE,
+        default_guidance=DEFAULT_EXECUTOR_CORRECTION_GUIDANCE,
+    )
+
+
+def format_planner_prompt(
+    contract: dict[str, Any],
+    previous_iteration: PreviousIterationSummary | None = None,
+) -> str:
+    return PLANNER_PROMPT.format(
+        contract=json.dumps(contract, indent=2, ensure_ascii=False),
+        previous_iteration=format_previous_iteration(previous_iteration),
+        correction_guidance=format_planner_correction_guidance(previous_iteration),
+    )
 
 
 def format_executor_prompt(
     objective: str,
     plan: dict[str, Any],
     constraints: list[str],
+    previous_iteration: PreviousIterationSummary | None = None,
 ) -> str:
     return EXECUTOR_PROMPT.format(
         objective=objective,
         plan=json.dumps(plan, indent=2, ensure_ascii=False),
         constraints=json.dumps(constraints, indent=2, ensure_ascii=False),
+        previous_iteration=format_previous_iteration(previous_iteration),
+        correction_guidance=format_executor_correction_guidance(previous_iteration),
     )
 
 

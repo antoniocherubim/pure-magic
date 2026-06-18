@@ -7,13 +7,16 @@ from pathlib import Path
 from agent_loop.agents import ExecutorAgent, PlannerAgent, ReviewerAgent
 from agent_loop.config import DEFAULT_BRANCH_PREFIX, build_limits
 from agent_loop.models import (
+    CommandResult,
     ExecutionContext,
     ExecutorResult,
     ExecutorResponseError,
     IterationAudit,
     IterationRecord,
     PlannerResponseError,
+    PreviousIterationSummary,
     ReviewerResponseError,
+    build_check_statuses,
 )
 from agent_loop.openai_client import create_chat_client_from_env
 from agent_loop.tools import (
@@ -80,6 +83,37 @@ def _finalize_completed_iteration(
     )
 
 
+def _remember_previous_iteration(
+    context: ExecutionContext,
+    writer: IterationArtifactWriter,
+    *,
+    status: str,
+    planner_summary: str | None = None,
+    executor_summary: str | None = None,
+    reviewer_decision: str | None = None,
+    failed_stage: str | None = None,
+    error: str | None = None,
+    command_results: list[CommandResult] | None = None,
+    planned_commands: list[str] | None = None,
+    failed_command: str | None = None,
+) -> None:
+    context.previous_iteration = PreviousIterationSummary(
+        iteration=context.iteration,
+        status=status,
+        artifact_dir=writer.artifact_dir_rel,
+        planner_summary=planner_summary,
+        executor_summary=executor_summary,
+        reviewer_decision=reviewer_decision,
+        failed_stage=failed_stage,
+        error=error,
+        checks=build_check_statuses(
+            results=command_results,
+            planned_commands=planned_commands,
+            failed_command=failed_command,
+        ),
+    )
+
+
 def _fail_iteration(
     context: ExecutionContext,
     writer: IterationArtifactWriter,
@@ -89,6 +123,9 @@ def _fail_iteration(
     error: str,
     planner_summary: str | None = None,
     executor_summary: str | None = None,
+    command_results: list[CommandResult] | None = None,
+    planned_commands: list[str] | None = None,
+    failed_command: str | None = None,
 ) -> None:
     context.last_error = error
     context.last_failed_stage = stage
@@ -100,6 +137,18 @@ def _fail_iteration(
         error=error,
         planner_summary=planner_summary,
         executor_summary=executor_summary,
+    )
+    _remember_previous_iteration(
+        context,
+        writer,
+        status="failed",
+        planner_summary=planner_summary,
+        executor_summary=executor_summary,
+        failed_stage=stage,
+        error=error,
+        command_results=command_results,
+        planned_commands=planned_commands,
+        failed_command=failed_command,
     )
     if context.failure_count >= limits.failure_limit:
         raise RuntimeError(error)
@@ -222,6 +271,9 @@ def run_loop(
         except Exception as exc:
             writer.save_commands([item.to_dict() for item in command_results])
             writer.save_checks_error(str(exc))
+            failed_command = None
+            if len(command_results) < len(executor_result.commands):
+                failed_command = executor_result.commands[len(command_results)]
             _fail_iteration(
                 context,
                 writer,
@@ -230,6 +282,9 @@ def run_loop(
                 error=str(exc),
                 planner_summary=planner_result.summary,
                 executor_summary=executor_result.summary,
+                command_results=command_results,
+                planned_commands=executor_result.commands,
+                failed_command=failed_command,
             )
             continue
         writer.save_commands([item.to_dict() for item in command_results])
@@ -246,6 +301,8 @@ def run_loop(
                 error=str(exc),
                 planner_summary=planner_result.summary,
                 executor_summary=executor_result.summary,
+                command_results=command_results,
+                planned_commands=executor_result.commands,
             )
             continue
         context.last_diff = diff_text
@@ -281,6 +338,8 @@ def run_loop(
                 error=str(exc),
                 planner_summary=planner_result.summary,
                 executor_summary=executor_result.summary,
+                command_results=command_results,
+                planned_commands=executor_result.commands,
             )
             continue
         writer.save_reviewer_response(reviewer_result.to_dict())
@@ -303,6 +362,16 @@ def run_loop(
             context,
             record,
             limits.estimated_cost_per_iteration,
+        )
+        _remember_previous_iteration(
+            context,
+            writer,
+            status="completed",
+            planner_summary=record.planner.summary,
+            executor_summary=record.executor.summary,
+            reviewer_decision=record.reviewer.decision.value,
+            command_results=record.commands,
+            planned_commands=record.executor.commands,
         )
 
         if context.cumulative_cost > limits.cost_limit:
