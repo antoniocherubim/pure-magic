@@ -42,6 +42,7 @@ class Contract:
     failure_limit: int | None = None
     command_timeout_sec: int | None = None
     estimated_cost_per_iteration: float | None = None
+    dry_run: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Contract":
@@ -59,6 +60,7 @@ class Contract:
             estimated_cost_per_iteration=_optional_float(
                 data.get("estimated_cost_per_iteration")
             ),
+            dry_run=data["dry_run"] if "dry_run" in data else None,
         )
 
     def to_dict(self) -> dict[str, Any]:

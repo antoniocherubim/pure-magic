@@ -15,6 +15,7 @@ cost_limit: 1.0
 failure_limit: 3
 command_timeout_sec: 120
 estimated_cost_per_iteration: 0.02
+# dry_run: true
 ---
 
 # Agent Contract

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent_loop.agents import ExecutorAgent, PlannerAgent, ReviewerAgent
+from agent_loop.config import AGENT_DRY_RUN_ENV, HarnessOverrides
 from agent_loop.models import ReviewerDecision
 from agent_loop.runner import run_loop
 
@@ -344,3 +345,159 @@ allow_overwrite: false
 
     assert exit_code == 0
     assert client.calls == 2
+
+
+def _programmatic_loop_agents() -> tuple[PlannerAgent, ExecutorAgent, ReviewerAgent]:
+    planner = PlannerAgent(
+        responder=lambda context: {
+            "summary": "Programmatic config test",
+            "tasks": ["Run checks"],
+        }
+    )
+    executor = ExecutorAgent(
+        provider=lambda request: {
+            "operations": [],
+            "commands": [],
+            "summary": "No file changes",
+        }
+    )
+    reviewer = ReviewerAgent(
+        responder=lambda context, payload: {
+            "decision": ReviewerDecision.OBJECTIVE_COMPLETE.value,
+            "reason": "Done.",
+        }
+    )
+    return planner, executor, reviewer
+
+
+def test_run_loop_without_overrides_respects_contract_dry_run(temp_repo, monkeypatch) -> None:
+    (temp_repo / "agent_contract.md").write_text(
+        """---
+objective: Respect contract dry_run
+checks:
+  - pytest
+constraints:
+  - Never run sudo
+max_iterations: 1
+task_name: contract-dry-run
+allow_overwrite: false
+dry_run: false
+---
+""",
+        encoding="utf-8",
+    )
+    calls = {"count": 0}
+
+    def track_safe_start(*args, **kwargs):
+        calls["count"] += 1
+
+    monkeypatch.setattr("agent_loop.runner.ensure_safe_start", track_safe_start)
+    planner, executor, reviewer = _programmatic_loop_agents()
+
+    exit_code = run_loop(
+        repo_path=temp_repo,
+        planner=planner,
+        executor=executor,
+        reviewer=reviewer,
+    )
+
+    assert exit_code == 0
+    assert calls["count"] == 1
+
+
+def test_run_loop_without_overrides_respects_env_dry_run(temp_repo, monkeypatch) -> None:
+    (temp_repo / "agent_contract.md").write_text(
+        """---
+objective: Respect env dry_run
+checks:
+  - pytest
+constraints:
+  - Never run sudo
+max_iterations: 1
+task_name: env-dry-run
+allow_overwrite: false
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(AGENT_DRY_RUN_ENV, "false")
+    calls = {"count": 0}
+    monkeypatch.setattr(
+        "agent_loop.runner.ensure_safe_start",
+        lambda *args, **kwargs: calls.__setitem__("count", calls["count"] + 1),
+    )
+    planner, executor, reviewer = _programmatic_loop_agents()
+
+    exit_code = run_loop(
+        repo_path=temp_repo,
+        planner=planner,
+        executor=executor,
+        reviewer=reviewer,
+    )
+
+    assert exit_code == 0
+    assert calls["count"] == 1
+
+
+def test_run_loop_overrides_dry_run_beats_contract_and_env(temp_repo, monkeypatch) -> None:
+    (temp_repo / "agent_contract.md").write_text(
+        """---
+objective: Override dry_run
+checks:
+  - pytest
+constraints:
+  - Never run sudo
+max_iterations: 1
+task_name: override-dry-run
+allow_overwrite: false
+dry_run: true
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(AGENT_DRY_RUN_ENV, "true")
+    calls = {"count": 0}
+    monkeypatch.setattr(
+        "agent_loop.runner.ensure_safe_start",
+        lambda *args, **kwargs: calls.__setitem__("count", calls["count"] + 1),
+    )
+    planner, executor, reviewer = _programmatic_loop_agents()
+
+    exit_code = run_loop(
+        repo_path=temp_repo,
+        planner=planner,
+        executor=executor,
+        reviewer=reviewer,
+        overrides=HarnessOverrides(dry_run=False),
+    )
+
+    assert exit_code == 0
+    assert calls["count"] == 1
+
+
+def test_run_loop_without_overrides_defaults_to_dry_run(temp_repo, monkeypatch) -> None:
+    (temp_repo / "agent_contract.md").write_text(
+        """---
+objective: Default dry_run
+checks:
+  - pytest
+constraints:
+  - Never run sudo
+max_iterations: 1
+task_name: default-dry-run
+allow_overwrite: false
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(AGENT_DRY_RUN_ENV, raising=False)
+    calls = {"count": 0}
+    monkeypatch.setattr(
+        "agent_loop.runner.ensure_safe_start",
+        lambda *args, **kwargs: calls.__setitem__("count", calls["count"] + 1),
+    )
+
+    exit_code = run_loop(repo_path=temp_repo)
+
+    assert exit_code == 0
+    assert calls["count"] == 0

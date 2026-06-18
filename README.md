@@ -137,6 +137,32 @@ python runner.py --repo . --dry-run
 
 `--dry-run` executa uma iteração simulada e grava `work/agent_log.md`.
 
+## Configuração operacional
+
+Precedência por campo: **CLI > contrato > env > defaults**.
+
+| Campo | CLI | Contrato | Variável de ambiente | Default |
+|-------|-----|----------|----------------------|---------|
+| Modelo OpenAI | `--model` | — | `OPENAI_MODEL` | `gpt-4o-mini` |
+| Iterações | `--max-iterations` | `max_iterations` | `AGENT_MAX_ITERATIONS` | `5` |
+| Timeout de checks | `--command-timeout-sec` | `command_timeout_sec` | `AGENT_COMMAND_TIMEOUT_SEC` | `120` |
+| Cost limit | `--cost-limit` | `cost_limit` | `AGENT_COST_LIMIT` | `5.0` |
+| Dry-run | `--dry-run` / `--no-dry-run` | `dry_run` (opcional) | `AGENT_DRY_RUN` | `true` |
+
+A API key (`OPENAI_API_KEY`) continua **somente via env** — nunca por CLI.
+
+Exemplos:
+
+```bash
+OPENAI_API_KEY=... AGENT_MAX_ITERATIONS=10 python runner.py --repo . --no-dry-run
+python runner.py --model gpt-4o-mini --cost-limit 2.5 --command-timeout-sec 60
+python runner.py --help
+```
+
+Stubs locais e agents injetados funcionam sem `OPENAI_API_KEY`. Com a key configurada, Planner, Executor e Reviewer usam o modelo resolvido.
+
+Chamadas programáticas a `run_loop(...)` seguem a mesma precedência: passe `overrides=HarnessOverrides(...)` ou `dry_run=...` apenas quando quiser sobrescrever contrato/env; omitir ambos deixa a resolução usar contrato, env e defaults.
+
 Fluxo esperado:
 
 1. Ler contrato

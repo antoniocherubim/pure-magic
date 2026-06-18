@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from agent_loop.agents import ExecutorAgent, PlannerAgent, ReviewerAgent
-from agent_loop.config import DEFAULT_BRANCH_PREFIX, build_limits
+from agent_loop.config import DEFAULT_BRANCH_PREFIX, HarnessOverrides, resolve_harness_config
 from agent_loop.models import (
     CommandResult,
     ExecutionContext,
@@ -20,7 +20,7 @@ from agent_loop.models import (
     detect_repeat_attempt,
     write_file_paths_from_operations,
 )
-from agent_loop.openai_client import create_chat_client_from_env
+from agent_loop.openai_client import create_chat_client, create_chat_client_from_env
 from agent_loop.tools import (
     ContractError,
     IterationArtifactWriter,
@@ -198,13 +198,33 @@ def _max_iterations_error(context: ExecutionContext) -> RuntimeError:
     return RuntimeError("Max iterations reached")
 
 
+def _effective_overrides(
+    overrides: HarnessOverrides | None,
+    dry_run: bool | None,
+) -> HarnessOverrides:
+    if overrides is not None:
+        if dry_run is not None and overrides.dry_run is None:
+            return HarnessOverrides(
+                model=overrides.model,
+                max_iterations=overrides.max_iterations,
+                command_timeout_sec=overrides.command_timeout_sec,
+                cost_limit=overrides.cost_limit,
+                dry_run=dry_run,
+            )
+        return overrides
+    if dry_run is not None:
+        return HarnessOverrides(dry_run=dry_run)
+    return HarnessOverrides()
+
+
 def run_loop(
     repo_path: str | Path,
     contract_path: str | Path | None = None,
-    dry_run: bool = True,
+    dry_run: bool | None = None,
     planner: PlannerAgent | None = None,
     reviewer: ReviewerAgent | None = None,
     executor: ExecutorAgent | None = None,
+    overrides: HarnessOverrides | None = None,
 ) -> int:
     repo = Path(repo_path).resolve()
     contract_file = Path(contract_path) if contract_path else repo / "agent_contract.md"
@@ -213,7 +233,10 @@ def run_loop(
     contract_file = contract_file.resolve()
 
     contract = read_contract(contract_file)
-    limits = build_limits(contract.to_dict())
+    effective_overrides = _effective_overrides(overrides, dry_run)
+    resolved = resolve_harness_config(contract.to_dict(), cli=effective_overrides)
+    limits = resolved.limits
+    dry_run = resolved.dry_run
     branch_name = f"{DEFAULT_BRANCH_PREFIX}{contract.task_name}"
 
     if not dry_run:
@@ -230,9 +253,10 @@ def run_loop(
         dry_run=dry_run,
     )
 
-    planner_agent = planner or PlannerAgent(client=create_chat_client_from_env())
-    reviewer_agent = reviewer or ReviewerAgent(client=create_chat_client_from_env())
-    executor_agent = executor or ExecutorAgent(client=create_chat_client_from_env())
+    chat_client = create_chat_client(resolved.openai_settings) if resolved.openai_settings else None
+    planner_agent = planner or PlannerAgent(client=chat_client or create_chat_client_from_env())
+    reviewer_agent = reviewer or ReviewerAgent(client=chat_client or create_chat_client_from_env())
+    executor_agent = executor or ExecutorAgent(client=chat_client or create_chat_client_from_env())
 
     while context.iteration < limits.max_iterations:
         context.iteration += 1
@@ -449,35 +473,94 @@ def run_loop(
     raise _max_iterations_error(context)
 
 
+CLI_EPILOG = """
+Configuration precedence (highest to lowest):
+  1. CLI flags (--model, --max-iterations, --command-timeout-sec, --cost-limit, --dry-run)
+  2. agent_contract.md fields
+  3. Environment variables
+  4. Built-in defaults
+
+Environment variables:
+  OPENAI_API_KEY            API key for Planner, Executor, and Reviewer (required for API mode)
+  OPENAI_MODEL              OpenAI model name
+  AGENT_MAX_ITERATIONS      Loop iteration limit
+  AGENT_COMMAND_TIMEOUT_SEC Subprocess timeout for checks
+  AGENT_COST_LIMIT          Maximum estimated cumulative cost
+  AGENT_DRY_RUN             true/false/1/0 for simulated vs real execution
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run the Local Autonomous Coding Loop against a repository.",
+        description=(
+            "Run the Local Autonomous Coding Loop (Planner, Executor, Reviewer) "
+            "against a repository with safe git and subprocess guards."
+        ),
+        epilog=CLI_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--repo", default=".", help="Target repository path")
+    parser.add_argument(
+        "--repo",
+        default=".",
+        help="Target repository path (default: current directory)",
+    )
     parser.add_argument(
         "--contract",
         default="agent_contract.md",
-        help="Contract path relative to the repository",
+        help="Contract path relative to the repository (default: agent_contract.md)",
     )
     parser.add_argument(
+        "--model",
+        default=None,
+        help="OpenAI model override; omit to use OPENAI_MODEL, then default",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="Maximum loop iterations; omit to use contract, AGENT_MAX_ITERATIONS, or default",
+    )
+    parser.add_argument(
+        "--command-timeout-sec",
+        type=int,
+        default=None,
+        help="Check command timeout in seconds; omit to use contract, env, or default",
+    )
+    parser.add_argument(
+        "--cost-limit",
+        type=float,
+        default=None,
+        help="Estimated cumulative cost limit; omit to use contract, AGENT_COST_LIMIT, or default",
+    )
+    dry_run_group = parser.add_mutually_exclusive_group()
+    dry_run_group.add_argument(
         "--dry-run",
         action="store_true",
-        default=True,
-        help="Simulate a single iteration without mutating the repository",
+        dest="dry_run",
+        default=None,
+        help="Simulate without mutating the repository (default when unset: contract/env/default)",
     )
-    parser.add_argument(
+    dry_run_group.add_argument(
         "--no-dry-run",
         action="store_false",
         dest="dry_run",
-        help="Allow real file and git changes",
+        help="Apply real file, git, and subprocess changes",
     )
     args = parser.parse_args(argv)
+
+    overrides = HarnessOverrides(
+        model=args.model,
+        max_iterations=args.max_iterations,
+        command_timeout_sec=args.command_timeout_sec,
+        cost_limit=args.cost_limit,
+        dry_run=args.dry_run,
+    )
 
     try:
         return run_loop(
             repo_path=args.repo,
             contract_path=args.contract,
-            dry_run=args.dry_run,
+            overrides=overrides,
         )
     except (
         ContractError,
