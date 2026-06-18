@@ -4,3 +4,5 @@ work/
 .env
 *.pyc
 venv/
+.agents/
+.codex/

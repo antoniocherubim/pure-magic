@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from agent_loop.agents import ExecutorAgent, PlannerAgent, ReviewerAgent
-from agent_loop.config import DEFAULT_BRANCH_PREFIX, HarnessOverrides, resolve_harness_config
+from agent_loop.config import (
+    DEFAULT_BRANCH_PREFIX,
+    HarnessOverrides,
+    ResolvedHarnessConfig,
+    resolve_harness_config,
+)
 from agent_loop.models import (
     CommandResult,
     ExecutionContext,
@@ -490,6 +496,86 @@ Environment variables:
 """
 
 
+def _print_run_banner(
+    resolved: ResolvedHarnessConfig,
+    repo: Path,
+    contract: Path,
+    task_name: str,
+    agent_mode: str,
+) -> None:
+    branch = f"{DEFAULT_BRANCH_PREFIX}{task_name}"
+    print("Local Autonomous Coding Loop")
+    print(f"  repo:           {repo}")
+    print(f"  contract:       {contract}")
+    print(f"  agent mode:     {agent_mode}")
+    if agent_mode == "openai" and resolved.openai_settings:
+        print(f"  model:          {resolved.openai_settings.model}")
+    print(f"  task / branch:  {task_name} -> {branch}")
+    print(f"  dry_run:        {resolved.dry_run}")
+    print(f"  max_iterations: {resolved.limits.max_iterations}")
+
+
+def _success_artifacts_path(work: Path) -> Path:
+    iterations_dir = work / "iterations"
+    if not iterations_dir.is_dir():
+        return iterations_dir
+    numbers = [
+        int(path.name)
+        for path in iterations_dir.iterdir()
+        if path.is_dir() and path.name.isdigit()
+    ]
+    if not numbers:
+        return iterations_dir
+    return iterations_dir / str(max(numbers))
+
+
+def _print_run_success(repo: Path, dry_run: bool) -> None:
+    work = repo / "work"
+    mode = "dry-run" if dry_run else "live"
+    artifacts = _success_artifacts_path(work)
+    print(f"Harness finished successfully ({mode} mode).")
+    print(f"  log:       {work / 'agent_log.md'}")
+    print(f"  artifacts: {artifacts}")
+
+
+def _format_cli_error(exc: Exception, *, repo: Path, contract: Path) -> str:
+    work = repo / "work"
+    lines = [f"Harness failed: {exc}"]
+
+    if isinstance(exc, ContractError):
+        lines.append(f"Hint: verify the contract file at {contract}")
+    elif isinstance(exc, SecurityError):
+        lines.append(
+            "Hint: ensure the repository is clean before running with --no-dry-run."
+        )
+        lines.append(
+            "      Only allowed dirty paths (e.g. agent_contract.md) are permitted."
+        )
+    elif isinstance(exc, PlannerResponseError):
+        lines.append(
+            "Hint: see work/iterations/<n>/planner_response.json for details."
+        )
+    elif isinstance(exc, ExecutorResponseError):
+        lines.append(
+            "Hint: see work/iterations/<n>/executor_response.json for details."
+        )
+    elif isinstance(exc, ReviewerResponseError):
+        lines.append(
+            "Hint: see work/iterations/<n>/reviewer_response.json for details."
+        )
+    elif isinstance(exc, RuntimeError):
+        lines.append(
+            f"Hint: see {work / 'iterations'}/*/meta.json for failed_stage and error."
+        )
+        if "Max iterations reached" in str(exc):
+            lines.append(
+                f"      Also check {work / 'agent_log.md'} for the full iteration history."
+            )
+
+    lines.append(f"Logs: {work / 'agent_log.md'}")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -556,12 +642,32 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
     )
 
+    repo = Path(args.repo).resolve()
+    contract_file = Path(args.contract)
+    if not contract_file.is_absolute():
+        contract_file = repo / contract_file
+    contract_file = contract_file.resolve()
+
     try:
-        return run_loop(
-            repo_path=args.repo,
-            contract_path=args.contract,
+        contract = read_contract(contract_file)
+        resolved = resolve_harness_config(contract.to_dict(), cli=overrides)
+        agent_mode = "openai" if resolved.openai_settings else "stub"
+        _print_run_banner(
+            resolved,
+            repo,
+            contract_file,
+            contract.task_name,
+            agent_mode,
+        )
+
+        exit_code = run_loop(
+            repo_path=repo,
+            contract_path=contract_file,
             overrides=overrides,
         )
+        if exit_code == 0:
+            _print_run_success(repo, resolved.dry_run)
+        return exit_code
     except (
         ContractError,
         SecurityError,
@@ -570,5 +676,5 @@ def main(argv: list[str] | None = None) -> int:
         ReviewerResponseError,
         ExecutorResponseError,
     ) as exc:
-        print(f"error: {exc}")
+        print(_format_cli_error(exc, repo=repo, contract=contract_file), file=sys.stderr)
         return 1
