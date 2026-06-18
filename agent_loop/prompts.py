@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from agent_loop.config import REQUIRED_CONTRACT_FIELDS, SUPPORTED_OPERATION_TYPES
-from agent_loop.models import PlannerResponseError, ReviewerDecision
+from agent_loop.models import PlannerResponseError, ReviewerDecision, ReviewerResponseError
 
 PLANNER_PROMPT = """You are the Planner agent for a local autonomous coding loop.
 
@@ -168,9 +168,46 @@ def validate_planner_response(payload: dict[str, Any]) -> list[str]:
 
 def parse_planner_response(text: str) -> dict[str, Any]:
     """Parse planner JSON from raw model output."""
+    return _parse_json_object_response(text, agent_label="Planner", error_type=PlannerResponseError)
+
+
+def validate_reviewer_response(payload: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["Reviewer payload must be a JSON object"]
+
+    decision = payload.get("decision")
+    if not isinstance(decision, str) or not decision.strip():
+        errors.append("decision must be a non-empty string")
+    else:
+        try:
+            ReviewerDecision(decision.strip().upper())
+        except ValueError:
+            errors.append(
+                "decision must be one of CONTINUE, REVISE, OBJECTIVE_COMPLETE"
+            )
+
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        errors.append("reason must be a non-empty string")
+
+    return errors
+
+
+def parse_reviewer_response(text: str) -> dict[str, Any]:
+    """Parse reviewer JSON from raw model output."""
+    return _parse_json_object_response(text, agent_label="Reviewer", error_type=ReviewerResponseError)
+
+
+def _parse_json_object_response(
+    text: str,
+    *,
+    agent_label: str,
+    error_type: type[Exception],
+) -> dict[str, Any]:
     stripped = text.strip()
     if not stripped:
-        raise PlannerResponseError("Planner response was empty")
+        raise error_type(f"{agent_label} response was empty")
 
     candidates = [stripped]
     fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
@@ -190,12 +227,12 @@ def parse_planner_response(text: str) -> dict[str, Any]:
             continue
         if isinstance(data, dict):
             return data
-        raise PlannerResponseError("Planner response must be a JSON object")
+        raise error_type(f"{agent_label} response must be a JSON object")
 
-    message = "Planner response is not valid JSON"
+    message = f"{agent_label} response is not valid JSON"
     if last_error is not None:
         message = f"{message}: {last_error.msg}"
-    raise PlannerResponseError(message)
+    raise error_type(message)
 
 
 def validate_executor_response(payload: dict[str, Any]) -> list[str]:

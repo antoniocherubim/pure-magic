@@ -15,6 +15,10 @@ class PlannerResponseError(Exception):
     """Raised when the planner response cannot be parsed or validated."""
 
 
+class ReviewerResponseError(Exception):
+    """Raised when the reviewer response cannot be parsed or validated."""
+
+
 class ReviewerDecision(str, Enum):
     CONTINUE = "CONTINUE"
     REVISE = "REVISE"

@@ -12,6 +12,7 @@ from agent_loop.models import (
     PlannerResponseError,
     PlannerResult,
     ReviewerDecision,
+    ReviewerResponseError,
     ReviewerResult,
 )
 from agent_loop.openai_client import ChatCompletionClient
@@ -20,7 +21,9 @@ from agent_loop.prompts import (
     format_planner_prompt,
     format_reviewer_prompt,
     parse_planner_response,
+    parse_reviewer_response,
     validate_planner_response,
+    validate_reviewer_response,
 )
 
 
@@ -46,7 +49,10 @@ class PlannerAgent:
 
         if self.client is not None:
             prompt = self.build_prompt(context)
-            raw = self.client.complete(prompt=prompt)
+            try:
+                raw = self.client.complete(prompt=prompt)
+            except Exception as exc:
+                raise PlannerResponseError(f"Planner API call failed: {exc}") from exc
             payload = parse_planner_response(raw)
             errors = validate_planner_response(payload)
             if errors:
@@ -75,6 +81,7 @@ class ReviewerAgent:
     """Builds the reviewer prompt and optionally calls a model client."""
 
     responder: ReviewerResponder | None = None
+    client: ChatCompletionClient | None = None
 
     def build_prompt(
         self,
@@ -100,30 +107,56 @@ class ReviewerAgent:
         diff: str,
         command_results: list[dict[str, Any]],
     ) -> ReviewerResult:
-        if self.responder is None:
-            if all(item["returncode"] == 0 for item in command_results):
-                return ReviewerResult(
-                    decision=ReviewerDecision.OBJECTIVE_COMPLETE,
-                    reason="All requested checks passed in the current iteration.",
-                )
-            return ReviewerResult(
-                decision=ReviewerDecision.REVISE,
-                reason="At least one check failed and the plan should be revised.",
+        if self.responder is not None:
+            payload = self.responder(
+                context,
+                {
+                    "planner": planner.to_dict(),
+                    "executor_summary": executor_summary,
+                    "diff": diff,
+                    "command_results": command_results,
+                },
             )
+            return self._to_result(payload, strict=False)
 
-        payload = self.responder(
-            context,
-            {
-                "planner": planner.to_dict(),
-                "executor_summary": executor_summary,
-                "diff": diff,
-                "command_results": command_results,
-            },
+        if self.client is not None:
+            prompt = self.build_prompt(
+                context,
+                planner=planner,
+                executor_summary=executor_summary,
+                diff=diff,
+                command_results=command_results,
+            )
+            try:
+                raw = self.client.complete(prompt=prompt)
+            except Exception as exc:
+                raise ReviewerResponseError(f"Reviewer API call failed: {exc}") from exc
+            payload = parse_reviewer_response(raw)
+            errors = validate_reviewer_response(payload)
+            if errors:
+                raise ReviewerResponseError("; ".join(errors))
+            return self._to_result(payload, strict=True)
+
+        if all(item["returncode"] == 0 for item in command_results):
+            return ReviewerResult(
+                decision=ReviewerDecision.OBJECTIVE_COMPLETE,
+                reason="All requested checks passed in the current iteration.",
+            )
+        return ReviewerResult(
+            decision=ReviewerDecision.REVISE,
+            reason="At least one check failed and the plan should be revised.",
         )
+
+    @staticmethod
+    def _to_result(payload: dict[str, Any], *, strict: bool) -> ReviewerResult:
         decision_text = str(payload.get("decision", ReviewerDecision.CONTINUE.value))
         try:
-            decision = ReviewerDecision(decision_text)
+            decision = ReviewerDecision(decision_text.strip().upper())
         except ValueError:
+            if strict:
+                raise ReviewerResponseError(
+                    "decision must be one of CONTINUE, REVISE, OBJECTIVE_COMPLETE"
+                )
             decision = ReviewerDecision.CONTINUE
         return ReviewerResult(decision=decision, reason=str(payload.get("reason", "")))
 

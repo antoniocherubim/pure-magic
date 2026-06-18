@@ -6,7 +6,13 @@ import argparse
 from pathlib import Path
 from agent_loop.agents import ExternalExecutorBridge, PlannerAgent, ReviewerAgent
 from agent_loop.config import DEFAULT_BRANCH_PREFIX, build_limits
-from agent_loop.models import ExecutionContext, ExecutorResult, IterationRecord, PlannerResponseError
+from agent_loop.models import (
+    ExecutionContext,
+    ExecutorResult,
+    IterationRecord,
+    PlannerResponseError,
+    ReviewerResponseError,
+)
 from agent_loop.openai_client import create_chat_client_from_env
 from agent_loop.prompts import validate_executor_response
 from agent_loop.tools import (
@@ -14,6 +20,7 @@ from agent_loop.tools import (
     SecurityError,
     apply_operations,
     collect_diff,
+    contract_dirty_allowance,
     create_or_switch_branch,
     ensure_safe_start,
     read_contract,
@@ -33,13 +40,14 @@ def run_loop(
     contract_file = Path(contract_path) if contract_path else repo / "agent_contract.md"
     if not contract_file.is_absolute():
         contract_file = repo / contract_file
+    contract_file = contract_file.resolve()
 
     contract = read_contract(contract_file)
     limits = build_limits(contract.to_dict())
     branch_name = f"{DEFAULT_BRANCH_PREFIX}{contract.task_name}"
 
     if not dry_run:
-        ensure_safe_start(repo)
+        ensure_safe_start(repo, allowed_dirty_paths=contract_dirty_allowance(repo, contract_file))
 
     create_or_switch_branch(repo, branch_name, dry_run=dry_run)
 
@@ -53,7 +61,7 @@ def run_loop(
     )
 
     planner_agent = planner or PlannerAgent(client=create_chat_client_from_env())
-    reviewer_agent = reviewer or ReviewerAgent()
+    reviewer_agent = reviewer or ReviewerAgent(client=create_chat_client_from_env())
     bridge = executor_bridge or ExternalExecutorBridge()
 
     while context.iteration < limits.max_iterations:
@@ -96,13 +104,19 @@ def run_loop(
         diff_text = collect_diff(repo, dry_run=dry_run)
         context.last_diff = diff_text
 
-        reviewer_result = reviewer_agent.run(
-            context,
-            planner=planner_result,
-            executor_summary=executor_result.summary,
-            diff=diff_text,
-            command_results=[item.to_dict() for item in command_results],
-        )
+        try:
+            reviewer_result = reviewer_agent.run(
+                context,
+                planner=planner_result,
+                executor_summary=executor_result.summary,
+                diff=diff_text,
+                command_results=[item.to_dict() for item in command_results],
+            )
+        except ReviewerResponseError as exc:
+            context.failure_count += 1
+            if context.failure_count >= limits.failure_limit:
+                raise RuntimeError(str(exc)) from exc
+            continue
 
         context.cumulative_cost += limits.estimated_cost_per_iteration
         record = IterationRecord(
@@ -165,6 +179,6 @@ def main(argv: list[str] | None = None) -> int:
             contract_path=args.contract,
             dry_run=args.dry_run,
         )
-    except (ContractError, SecurityError, RuntimeError, PlannerResponseError) as exc:
+    except (ContractError, SecurityError, RuntimeError, PlannerResponseError, ReviewerResponseError) as exc:
         print(f"error: {exc}")
         return 1

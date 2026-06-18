@@ -42,13 +42,65 @@ def git_status_porcelain(repo_path: Path) -> str:
     return result.stdout
 
 
-def ensure_safe_start(repo_path: Path) -> None:
+def ensure_safe_start(
+    repo_path: Path,
+    *,
+    allowed_dirty_paths: tuple[str, ...] = ("agent_contract.md",),
+) -> None:
     status_output = git_status_porcelain(repo_path).strip()
-    if status_output:
+    if not status_output:
+        return
+
+    allowed = {_normalize_repo_path(path) for path in allowed_dirty_paths}
+    violations: list[str] = []
+    for line in status_output.splitlines():
+        if not line.strip():
+            continue
+        paths = _parse_porcelain_paths(line)
+        if paths and all(_normalize_repo_path(path) in allowed for path in paths):
+            continue
+        violations.append(line)
+
+    if violations:
         raise SecurityError(
             "Repository must be clean before agent changes are applied.\n"
-            f"Current git status:\n{status_output}"
+            f"Current git status:\n" + "\n".join(violations)
         )
+
+
+def contract_dirty_allowance(repo_path: Path, contract_file: Path) -> tuple[str, ...]:
+    """Return repo-relative contract path when the contract lives inside the repo."""
+    resolved_repo = repo_path.resolve()
+    resolved_contract = contract_file.resolve()
+    try:
+        contract_rel = resolved_contract.relative_to(resolved_repo)
+    except ValueError:
+        return ()
+    return (_normalize_repo_path(str(contract_rel)),)
+
+
+def _parse_porcelain_paths(line: str) -> list[str]:
+    if len(line) < 4:
+        return []
+
+    payload = line[3:]
+    if " -> " in payload:
+        old_part, new_part = payload.split(" -> ", 1)
+        return [
+            _unquote_porcelain_path(old_part.strip()),
+            _unquote_porcelain_path(new_part.strip()),
+        ]
+    return [_unquote_porcelain_path(payload.strip())]
+
+
+def _unquote_porcelain_path(path: str) -> str:
+    if path.startswith('"') and path.endswith('"'):
+        path = bytes(path[1:-1], "utf-8").decode("unicode_escape")
+    return path
+
+
+def _normalize_repo_path(path: str) -> str:
+    return Path(path).as_posix().lstrip("./")
 
 
 def ensure_agent_branch(branch_name: str) -> None:

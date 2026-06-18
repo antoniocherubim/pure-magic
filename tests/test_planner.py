@@ -83,3 +83,12 @@ def test_planner_agent_prefers_responder_over_client(temp_repo) -> None:
 
     assert result.summary == "Responder wins"
     assert result.tasks == ["Only responder task"]
+
+
+def test_planner_agent_wraps_client_errors_as_planner_response_error(temp_repo) -> None:
+    class FailingClient:
+        def complete(self, *, prompt: str) -> str:
+            raise ConnectionError("transient API failure")
+
+    with pytest.raises(PlannerResponseError, match="Planner API call failed"):
+        PlannerAgent(client=FailingClient()).run(_make_context(temp_repo))

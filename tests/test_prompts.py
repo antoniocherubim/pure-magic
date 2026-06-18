@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from agent_loop.models import PlannerResponseError
+from agent_loop.models import PlannerResponseError, ReviewerResponseError
 from agent_loop.prompts import (
     parse_contract_md,
     parse_planner_response,
+    parse_reviewer_response,
     validate_contract,
     validate_executor_response,
     validate_planner_response,
+    validate_reviewer_response,
 )
 
 
@@ -107,3 +109,41 @@ def test_parse_planner_response_accepts_markdown_fence() -> None:
 def test_parse_planner_response_raises_on_invalid_json() -> None:
     with pytest.raises(PlannerResponseError, match="not valid JSON"):
         parse_planner_response("not json")
+
+
+def test_validate_reviewer_response_accepts_valid_payload() -> None:
+    payload = {"decision": "OBJECTIVE_COMPLETE", "reason": "All checks passed."}
+    assert validate_reviewer_response(payload) == []
+
+
+def test_validate_reviewer_response_reports_invalid_decision() -> None:
+    errors = validate_reviewer_response({"decision": "MAYBE", "reason": "unclear"})
+    assert "decision must be one of CONTINUE, REVISE, OBJECTIVE_COMPLETE" in errors
+
+
+def test_validate_reviewer_response_reports_empty_reason() -> None:
+    errors = validate_reviewer_response({"decision": "CONTINUE", "reason": "  "})
+    assert "reason must be a non-empty string" in errors
+
+
+def test_parse_reviewer_response_accepts_raw_json() -> None:
+    parsed = parse_reviewer_response(
+        '{"decision": "REVISE", "reason": "Checks failed."}'
+    )
+    assert parsed == {"decision": "REVISE", "reason": "Checks failed."}
+
+
+def test_parse_reviewer_response_accepts_markdown_fence() -> None:
+    parsed = parse_reviewer_response(
+        """Review:
+```json
+{"decision": "CONTINUE", "reason": "Proceed."}
+```
+"""
+    )
+    assert parsed == {"decision": "CONTINUE", "reason": "Proceed."}
+
+
+def test_parse_reviewer_response_raises_on_invalid_json() -> None:
+    with pytest.raises(ReviewerResponseError, match="not valid JSON"):
+        parse_reviewer_response("not json")
