@@ -80,10 +80,21 @@ class ExecutionContext:
     last_error: str = ""
     last_failed_stage: str | None = None
     previous_iteration: PreviousIterationSummary | None = None
+    repeat_signal: RepeatSignal | None = None
 
     @property
     def task_name(self) -> str:
         return self.contract.task_name
+
+
+@dataclass(slots=True)
+class RepeatSignal:
+    detected: bool
+    matches: list[str]
+    compared_with_iteration: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(slots=True)
@@ -133,6 +144,61 @@ def build_check_statuses(
     return statuses
 
 
+def write_file_paths_from_operations(operations: list["FileOperation"]) -> list[str]:
+    return sorted(
+        operation.path
+        for operation in operations
+        if operation.type == "write_file" and operation.path.strip()
+    )
+
+
+def _normalized_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def detect_repeat_attempt(
+    *,
+    planner_summary: str | None,
+    executor_summary: str | None,
+    commands: list[str] | None,
+    write_file_paths: list[str] | None,
+    previous: PreviousIterationSummary | None,
+) -> RepeatSignal:
+    if previous is None:
+        return RepeatSignal(detected=False, matches=[], compared_with_iteration=None)
+
+    matches: list[str] = []
+
+    current_planner = _normalized_text(planner_summary)
+    previous_planner = _normalized_text(previous.planner_summary)
+    if current_planner and previous_planner and current_planner == previous_planner:
+        matches.append("planner_summary")
+
+    current_executor = _normalized_text(executor_summary)
+    previous_executor = _normalized_text(previous.executor_summary)
+    if current_executor and previous_executor and current_executor == previous_executor:
+        matches.append("executor_summary")
+
+    current_commands = list(commands or [])
+    previous_commands = list(previous.commands or [])
+    if current_commands and previous_commands and current_commands == previous_commands:
+        matches.append("commands")
+
+    current_paths = sorted(write_file_paths or [])
+    previous_paths = sorted(previous.write_file_paths or [])
+    if current_paths and previous_paths and current_paths == previous_paths:
+        matches.append("write_file_paths")
+
+    return RepeatSignal(
+        detected=bool(matches),
+        matches=matches,
+        compared_with_iteration=previous.iteration,
+    )
+
+
 @dataclass(slots=True)
 class PreviousIterationSummary:
     iteration: int
@@ -144,6 +210,8 @@ class PreviousIterationSummary:
     failed_stage: str | None = None
     error: str | None = None
     checks: list[CheckStatus] = field(default_factory=list)
+    commands: list[str] = field(default_factory=list)
+    write_file_paths: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -156,6 +224,8 @@ class PreviousIterationSummary:
             "failed_stage": self.failed_stage,
             "error": self.error,
             "checks": [check.to_dict() for check in self.checks],
+            "commands": list(self.commands),
+            "write_file_paths": list(self.write_file_paths),
         }
 
 

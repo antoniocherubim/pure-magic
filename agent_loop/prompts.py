@@ -11,6 +11,7 @@ from agent_loop.models import (
     ExecutorResponseError,
     PlannerResponseError,
     PreviousIterationSummary,
+    RepeatSignal,
     ReviewerDecision,
     ReviewerResponseError,
 )
@@ -24,6 +25,9 @@ Previous iteration (most recent only):
 
 Correction strategy:
 {correction_guidance}
+
+Repeat warning:
+{repeat_warning}
 
 Contract:
 {contract}
@@ -44,6 +48,9 @@ Previous iteration (most recent only):
 
 Correction strategy:
 {correction_guidance}
+
+Repeat warning:
+{repeat_warning}
 
 Objective:
 {objective}
@@ -270,14 +277,28 @@ def format_executor_correction_guidance(
     return "(none - previous iteration did not fail or request revision)"
 
 
+def format_repeat_warning(repeat_signal: RepeatSignal | None) -> str:
+    if repeat_signal is None or not repeat_signal.detected:
+        return "(none - no repeated attempt detected)"
+
+    lines = [
+        f"Probable repeated attempt detected (compared with iteration {repeat_signal.compared_with_iteration}):",
+        *(f"- {match}" for match in repeat_signal.matches),
+        "Adjust the proposal; do not repeat the same approach blindly.",
+    ]
+    return "\n".join(lines)
+
+
 def format_planner_prompt(
     contract: dict[str, Any],
     previous_iteration: PreviousIterationSummary | None = None,
+    repeat_signal: RepeatSignal | None = None,
 ) -> str:
     return PLANNER_PROMPT.format(
         contract=json.dumps(contract, indent=2, ensure_ascii=False),
         previous_iteration=format_previous_iteration(previous_iteration),
         correction_guidance=format_planner_correction_guidance(previous_iteration),
+        repeat_warning=format_repeat_warning(repeat_signal),
     )
 
 
@@ -286,6 +307,7 @@ def format_executor_prompt(
     plan: dict[str, Any],
     constraints: list[str],
     previous_iteration: PreviousIterationSummary | None = None,
+    repeat_signal: RepeatSignal | None = None,
 ) -> str:
     return EXECUTOR_PROMPT.format(
         objective=objective,
@@ -293,6 +315,7 @@ def format_executor_prompt(
         constraints=json.dumps(constraints, indent=2, ensure_ascii=False),
         previous_iteration=format_previous_iteration(previous_iteration),
         correction_guidance=format_executor_correction_guidance(previous_iteration),
+        repeat_warning=format_repeat_warning(repeat_signal),
     )
 
 

@@ -17,6 +17,8 @@ from agent_loop.models import (
     PreviousIterationSummary,
     ReviewerResponseError,
     build_check_statuses,
+    detect_repeat_attempt,
+    write_file_paths_from_operations,
 )
 from agent_loop.openai_client import create_chat_client_from_env
 from agent_loop.tools import (
@@ -83,6 +85,26 @@ def _finalize_completed_iteration(
     )
 
 
+def _snapshot_repeat_signal(
+    context: ExecutionContext,
+    writer: IterationArtifactWriter,
+    *,
+    planner_summary: str | None = None,
+    executor_summary: str | None = None,
+    commands: list[str] | None = None,
+    write_file_paths: list[str] | None = None,
+) -> None:
+    signal = detect_repeat_attempt(
+        planner_summary=planner_summary,
+        executor_summary=executor_summary,
+        commands=commands,
+        write_file_paths=write_file_paths,
+        previous=context.previous_iteration,
+    )
+    context.repeat_signal = signal
+    writer.save_repeat_signal(signal.to_dict())
+
+
 def _remember_previous_iteration(
     context: ExecutionContext,
     writer: IterationArtifactWriter,
@@ -96,6 +118,7 @@ def _remember_previous_iteration(
     command_results: list[CommandResult] | None = None,
     planned_commands: list[str] | None = None,
     failed_command: str | None = None,
+    write_file_paths: list[str] | None = None,
 ) -> None:
     context.previous_iteration = PreviousIterationSummary(
         iteration=context.iteration,
@@ -111,6 +134,8 @@ def _remember_previous_iteration(
             planned_commands=planned_commands,
             failed_command=failed_command,
         ),
+        commands=list(planned_commands or []),
+        write_file_paths=list(write_file_paths or []),
     )
 
 
@@ -126,6 +151,7 @@ def _fail_iteration(
     command_results: list[CommandResult] | None = None,
     planned_commands: list[str] | None = None,
     failed_command: str | None = None,
+    write_file_paths: list[str] | None = None,
 ) -> None:
     context.last_error = error
     context.last_failed_stage = stage
@@ -138,6 +164,14 @@ def _fail_iteration(
         planner_summary=planner_summary,
         executor_summary=executor_summary,
     )
+    _snapshot_repeat_signal(
+        context,
+        writer,
+        planner_summary=planner_summary,
+        executor_summary=executor_summary,
+        commands=planned_commands,
+        write_file_paths=write_file_paths,
+    )
     _remember_previous_iteration(
         context,
         writer,
@@ -149,6 +183,7 @@ def _fail_iteration(
         command_results=command_results,
         planned_commands=planned_commands,
         failed_command=failed_command,
+        write_file_paths=write_file_paths,
     )
     if context.failure_count >= limits.failure_limit:
         raise RuntimeError(error)
@@ -254,6 +289,10 @@ def run_loop(
                 error=str(exc),
                 planner_summary=planner_result.summary,
                 executor_summary=executor_result.summary,
+                planned_commands=executor_result.commands,
+                write_file_paths=write_file_paths_from_operations(
+                    executor_result.operations
+                ),
             )
             continue
 
@@ -285,6 +324,9 @@ def run_loop(
                 command_results=command_results,
                 planned_commands=executor_result.commands,
                 failed_command=failed_command,
+                write_file_paths=write_file_paths_from_operations(
+                    executor_result.operations
+                ),
             )
             continue
         writer.save_commands([item.to_dict() for item in command_results])
@@ -303,6 +345,9 @@ def run_loop(
                 executor_summary=executor_result.summary,
                 command_results=command_results,
                 planned_commands=executor_result.commands,
+                write_file_paths=write_file_paths_from_operations(
+                    executor_result.operations
+                ),
             )
             continue
         context.last_diff = diff_text
@@ -340,6 +385,9 @@ def run_loop(
                 executor_summary=executor_result.summary,
                 command_results=command_results,
                 planned_commands=executor_result.commands,
+                write_file_paths=write_file_paths_from_operations(
+                    executor_result.operations
+                ),
             )
             continue
         writer.save_reviewer_response(reviewer_result.to_dict())
@@ -363,6 +411,15 @@ def run_loop(
             record,
             limits.estimated_cost_per_iteration,
         )
+        write_paths = write_file_paths_from_operations(record.executor.operations)
+        _snapshot_repeat_signal(
+            context,
+            writer,
+            planner_summary=record.planner.summary,
+            executor_summary=record.executor.summary,
+            commands=record.executor.commands,
+            write_file_paths=write_paths,
+        )
         _remember_previous_iteration(
             context,
             writer,
@@ -372,6 +429,7 @@ def run_loop(
             reviewer_decision=record.reviewer.decision.value,
             command_results=record.commands,
             planned_commands=record.executor.commands,
+            write_file_paths=write_paths,
         )
 
         if context.cumulative_cost > limits.cost_limit:

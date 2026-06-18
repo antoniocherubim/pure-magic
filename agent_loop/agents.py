@@ -46,6 +46,7 @@ class PlannerAgent:
         return format_planner_prompt(
             context.contract.to_dict(),
             previous_iteration=context.previous_iteration,
+            repeat_signal=context.repeat_signal,
         )
 
     def run(self, context: ExecutionContext) -> PlannerResult:
@@ -180,6 +181,7 @@ class ExecutorAgent:
             plan=planner.to_dict(),
             constraints=context.contract.constraints,
             previous_iteration=context.previous_iteration,
+            repeat_signal=context.repeat_signal,
         )
 
     def build_request(

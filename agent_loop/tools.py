@@ -316,6 +316,9 @@ class IterationArtifactWriter:
     def save_diff(self, diff_text: str) -> Path:
         return self._write_text("diff.patch", diff_text)
 
+    def save_repeat_signal(self, data: dict[str, Any]) -> Path:
+        return self._write_json("repeat_signal.json", data)
+
     def save_meta(
         self,
         *,
