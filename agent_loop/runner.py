@@ -33,6 +33,7 @@ from agent_loop.tools import (
     SecurityError,
     append_iteration_log,
     apply_operations,
+    build_repository_context,
     collect_diff,
     contract_dirty_allowance,
     create_or_switch_branch,
@@ -268,6 +269,12 @@ def run_loop(
         context.iteration += 1
         writer = IterationArtifactWriter(context.work_dir, context.iteration)
 
+        context.repository_context = build_repository_context(
+            repo,
+            contract_path=contract_file,
+        )
+        if context.repository_context is not None:
+            writer.save_repository_context(context.repository_context.to_dict())
         writer.save_planner_prompt(planner_agent.build_prompt(context))
         try:
             planner_result = planner_agent.run(context)

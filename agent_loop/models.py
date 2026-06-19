@@ -68,6 +68,22 @@ class Contract:
 
 
 @dataclass(slots=True)
+class RepositoryContext:
+    repo_name: str
+    repo_path: str
+    top_level_dirs: list[str]
+    root_files: list[str]
+    documentation_files: list[str]
+    config_files: list[str]
+    test_files: list[str]
+    snippets: list[dict[str, str]]
+    summary: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class ExecutionContext:
     repo_path: Path
     work_dir: Path
@@ -83,6 +99,7 @@ class ExecutionContext:
     last_failed_stage: str | None = None
     previous_iteration: PreviousIterationSummary | None = None
     repeat_signal: RepeatSignal | None = None
+    repository_context: RepositoryContext | None = None
 
     @property
     def task_name(self) -> str:

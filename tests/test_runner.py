@@ -31,6 +31,35 @@ allow_overwrite: false
     assert (temp_repo / "work" / "iterations" / "1" / "reviewer_response.json").exists()
 
 
+def test_run_loop_persists_repository_context_and_planner_prompt_block(temp_repo) -> None:
+    (temp_repo / "README.md").write_text("# Repo\n", encoding="utf-8")
+    (temp_repo / "agent_contract.md").write_text(
+        """---
+objective: Validate repository context
+checks:
+  - pytest
+constraints:
+  - Never run sudo
+max_iterations: 1
+task_name: repo-context-test
+allow_overwrite: false
+---
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = run_loop(repo_path=temp_repo, dry_run=True)
+
+    assert exit_code == 0
+    context_path = temp_repo / "work" / "iterations" / "1" / "repository_context.json"
+    prompt_path = temp_repo / "work" / "iterations" / "1" / "planner_prompt.txt"
+    assert context_path.exists()
+    assert prompt_path.exists()
+    prompt_text = prompt_path.read_text(encoding="utf-8")
+    assert "Repository context:" in prompt_text
+    assert '"repo_name"' in prompt_text
+
+
 def test_run_loop_applies_write_file_and_completes(temp_repo) -> None:
     (temp_repo / "agent_contract.md").write_text(
         """---

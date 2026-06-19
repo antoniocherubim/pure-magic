@@ -14,7 +14,13 @@ from agent_loop.config import (
     DEFAULT_BRANCH_PREFIX,
     PROTECTED_PATHS,
 )
-from agent_loop.models import CommandResult, Contract, FileOperation, IterationAudit
+from agent_loop.models import (
+    CommandResult,
+    Contract,
+    FileOperation,
+    IterationAudit,
+    RepositoryContext,
+)
 from agent_loop.prompts import parse_contract_md, validate_contract
 
 
@@ -34,6 +40,283 @@ def read_contract(path: Path) -> Contract:
     if errors:
         raise ContractError("; ".join(errors))
     return Contract.from_dict(raw_contract)
+
+
+REPO_CONTEXT_IGNORED_DIRS = frozenset({
+    ".git",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    "work",
+    "node_modules",
+    ".agents",
+    ".codex",
+})
+REPO_CONTEXT_CONFIG_FILENAMES = frozenset({
+    "pyproject.toml",
+    "requirements.txt",
+    "package.json",
+    "Makefile",
+    "pytest.ini",
+    "setup.cfg",
+})
+REPO_CONTEXT_BINARY_EXTENSIONS = frozenset({
+    ".pyc",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".pdf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".woff",
+    ".woff2",
+})
+MAX_TOP_LEVEL_DIRS = 20
+MAX_ROOT_FILES = 20
+MAX_DOCUMENTATION_FILES = 25
+MAX_CONFIG_FILES = 20
+MAX_TEST_FILES = 25
+MAX_SNIPPET_FILES = 5
+MAX_SNIPPET_LINES = 20
+MAX_SNIPPET_BYTES = 4096
+SNIPPET_EXCLUDED_DOCS = frozenset({"agent_contract.md"})
+
+
+def build_repository_context(
+    repo_path: Path,
+    *,
+    contract_path: Path | None = None,
+) -> RepositoryContext | None:
+    """Build a compact repository summary for the Planner.
+
+    Returns None when the repo root is missing or unreadable.
+    Individual file errors produce a partial context instead of failing.
+    """
+    try:
+        resolved = repo_path.resolve()
+    except OSError:
+        return None
+    if not resolved.is_dir():
+        return None
+    try:
+        root_entries = list(resolved.iterdir())
+    except OSError:
+        return None
+
+    repo_name = resolved.name
+    top_level_dirs = _collect_top_level_dirs(root_entries)
+    root_files = _collect_root_files(root_entries)
+    documentation_files = _collect_documentation_files(resolved, contract_path)
+    config_files = _collect_config_files(resolved, root_entries)
+    test_files = _collect_test_files(resolved)
+    snippets = _collect_snippets(resolved, documentation_files, config_files)
+    summary = _build_repo_summary(
+        repo_name,
+        top_level_dirs,
+        documentation_files,
+        config_files,
+        test_files,
+    )
+    return RepositoryContext(
+        repo_name=repo_name,
+        repo_path=str(resolved),
+        top_level_dirs=top_level_dirs,
+        root_files=root_files,
+        documentation_files=documentation_files,
+        config_files=config_files,
+        test_files=test_files,
+        snippets=snippets,
+        summary=summary,
+    )
+
+
+def _path_has_ignored_segment(path: Path, repo_root: Path) -> bool:
+    try:
+        relative = path.relative_to(repo_root)
+    except ValueError:
+        return True
+    return any(part in REPO_CONTEXT_IGNORED_DIRS for part in relative.parts)
+
+
+def _collect_top_level_dirs(root_entries: list[Path]) -> list[str]:
+    names = sorted(
+        entry.name
+        for entry in root_entries
+        if entry.is_dir()
+        and not entry.name.startswith(".")
+        and entry.name not in REPO_CONTEXT_IGNORED_DIRS
+    )
+    return names[:MAX_TOP_LEVEL_DIRS]
+
+
+def _collect_root_files(root_entries: list[Path]) -> list[str]:
+    names = sorted(
+        entry.name
+        for entry in root_entries
+        if entry.is_file() and not entry.name.startswith(".")
+    )
+    return names[:MAX_ROOT_FILES]
+
+
+def _collect_documentation_files(
+    repo_root: Path,
+    contract_path: Path | None,
+) -> list[str]:
+    found: set[str] = set()
+    readme = repo_root / "README.md"
+    if readme.is_file():
+        found.add("README.md")
+    roadmap = repo_root / "ROADMAP.md"
+    if roadmap.is_file():
+        found.add("ROADMAP.md")
+    contract = repo_root / "agent_contract.md"
+    if contract.is_file():
+        found.add("agent_contract.md")
+    if contract_path is not None:
+        try:
+            relative = contract_path.resolve().relative_to(repo_root.resolve()).as_posix()
+            if (repo_root / relative).is_file():
+                found.add(relative)
+        except (OSError, ValueError):
+            pass
+    try:
+        for path in repo_root.rglob("*"):
+            if not path.is_file() or _path_has_ignored_segment(path, repo_root):
+                continue
+            if "roadmap" in path.name.lower() and path.suffix.lower() == ".md":
+                found.add(path.relative_to(repo_root).as_posix())
+    except OSError:
+        pass
+    docs_dir = repo_root / "docs"
+    if docs_dir.is_dir():
+        try:
+            for path in docs_dir.rglob("*.md"):
+                if path.is_file() and not _path_has_ignored_segment(path, repo_root):
+                    found.add(path.relative_to(repo_root).as_posix())
+        except OSError:
+            pass
+    return sorted(found)[:MAX_DOCUMENTATION_FILES]
+
+
+def _collect_config_files(repo_root: Path, root_entries: list[Path]) -> list[str]:
+    found: set[str] = set()
+    for entry in root_entries:
+        if entry.is_file() and entry.name in REPO_CONTEXT_CONFIG_FILENAMES:
+            found.add(entry.name)
+    try:
+        for path in repo_root.rglob("*"):
+            if not path.is_file() or _path_has_ignored_segment(path, repo_root):
+                continue
+            if path.name in REPO_CONTEXT_CONFIG_FILENAMES:
+                found.add(path.relative_to(repo_root).as_posix())
+    except OSError:
+        pass
+    return sorted(found)[:MAX_CONFIG_FILES]
+
+
+def _collect_test_files(repo_root: Path) -> list[str]:
+    found: set[str] = set()
+    tests_dir = repo_root / "tests"
+    if tests_dir.is_dir():
+        try:
+            for path in tests_dir.rglob("*.py"):
+                if path.is_file() and not _path_has_ignored_segment(path, repo_root):
+                    found.add(path.relative_to(repo_root).as_posix())
+        except OSError:
+            pass
+    try:
+        for path in repo_root.rglob("test_*.py"):
+            if path.is_file() and not _path_has_ignored_segment(path, repo_root):
+                found.add(path.relative_to(repo_root).as_posix())
+    except OSError:
+        pass
+    return sorted(found)[:MAX_TEST_FILES]
+
+
+def _snippet_candidate_paths(
+    documentation_files: list[str],
+    config_files: list[str],
+) -> list[str]:
+    candidates: list[str] = []
+    if "README.md" in documentation_files:
+        candidates.append("README.md")
+    roadmap_docs = sorted(
+        path
+        for path in documentation_files
+        if "roadmap" in path.lower()
+        and path not in SNIPPET_EXCLUDED_DOCS
+        and path != "README.md"
+    )
+    candidates.extend(roadmap_docs)
+    other_docs = sorted(
+        path
+        for path in documentation_files
+        if path not in candidates and path not in SNIPPET_EXCLUDED_DOCS
+    )
+    candidates.extend(other_docs)
+    candidates.extend(sorted(config_files))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for path in candidates:
+        if path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique[:MAX_SNIPPET_FILES]
+
+
+def _collect_snippets(
+    repo_root: Path,
+    documentation_files: list[str],
+    config_files: list[str],
+) -> list[dict[str, str]]:
+    snippets: list[dict[str, str]] = []
+    for relative_path in _snippet_candidate_paths(documentation_files, config_files):
+        excerpt = _read_snippet(repo_root / relative_path)
+        if excerpt is not None:
+            snippets.append({"path": relative_path, "excerpt": excerpt})
+    return snippets
+
+
+def _read_snippet(path: Path) -> str | None:
+    if path.suffix.lower() in REPO_CONTEXT_BINARY_EXTENSIONS:
+        return None
+    try:
+        if path.stat().st_size > MAX_SNIPPET_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    lines = text.splitlines()[:MAX_SNIPPET_LINES]
+    return "\n".join(lines)
+
+
+def _build_repo_summary(
+    repo_name: str,
+    top_level_dirs: list[str],
+    documentation_files: list[str],
+    config_files: list[str],
+    test_files: list[str],
+) -> str:
+    dirs_text = ", ".join(top_level_dirs[:5]) if top_level_dirs else "none"
+    key_docs = [
+        path
+        for path in documentation_files
+        if path == "README.md" or "roadmap" in path.lower()
+    ][:3]
+    if not key_docs:
+        key_docs = documentation_files[:2]
+    docs_text = " and ".join(key_docs) if key_docs else "none"
+    config_text = ", ".join(config_files[:3]) if config_files else "none"
+    test_count = len(test_files)
+    test_label = "1 test file" if test_count == 1 else f"{test_count} test files"
+    return (
+        f"Repository {repo_name} with top-level dirs {dirs_text}; "
+        f"key docs {docs_text}; config {config_text}; {test_label}."
+    )
 
 
 def git_status_porcelain(repo_path: Path) -> str:
@@ -267,6 +550,9 @@ class IterationArtifactWriter:
 
     def save_planner_prompt(self, text: str) -> Path:
         return self._write_text("planner_prompt.txt", text)
+
+    def save_repository_context(self, data: dict[str, Any]) -> Path:
+        return self._write_json("repository_context.json", data)
 
     def save_planner_response(self, data: dict[str, Any]) -> Path:
         return self._write_json("planner_response.json", data)

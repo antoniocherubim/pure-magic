@@ -47,6 +47,7 @@ class PlannerAgent:
             context.contract.to_dict(),
             previous_iteration=context.previous_iteration,
             repeat_signal=context.repeat_signal,
+            repository_context=context.repository_context,
         )
 
     def run(self, context: ExecutionContext) -> PlannerResult:

@@ -12,6 +12,7 @@ from agent_loop.models import (
     PlannerResponseError,
     PreviousIterationSummary,
     RepeatSignal,
+    RepositoryContext,
     ReviewerDecision,
     ReviewerResponseError,
 )
@@ -28,6 +29,9 @@ Correction strategy:
 
 Repeat warning:
 {repeat_warning}
+
+Repository context:
+{repository_context}
 
 Contract:
 {contract}
@@ -289,16 +293,28 @@ def format_repeat_warning(repeat_signal: RepeatSignal | None) -> str:
     return "\n".join(lines)
 
 
+def format_repository_context(repository_context: RepositoryContext | None) -> str:
+    if repository_context is None:
+        return "(not available)"
+    return json.dumps(
+        repository_context.to_dict(),
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
 def format_planner_prompt(
     contract: dict[str, Any],
     previous_iteration: PreviousIterationSummary | None = None,
     repeat_signal: RepeatSignal | None = None,
+    repository_context: RepositoryContext | None = None,
 ) -> str:
     return PLANNER_PROMPT.format(
         contract=json.dumps(contract, indent=2, ensure_ascii=False),
         previous_iteration=format_previous_iteration(previous_iteration),
         correction_guidance=format_planner_correction_guidance(previous_iteration),
         repeat_warning=format_repeat_warning(repeat_signal),
+        repository_context=format_repository_context(repository_context),
     )
 
 

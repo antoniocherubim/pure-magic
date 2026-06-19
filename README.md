@@ -142,6 +142,7 @@ work/
   iterations/
     N/
       meta.json                    # status, failed_stage, error, lista de arquivos
+      repository_context.json      # contexto do repo usado pelo Planner (quando disponível)
       planner_prompt.txt
       planner_response.json        # ou {"error": "..."}
       executor_request.json
